@@ -12,7 +12,8 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
+from typing import Optional
 
 from config.settings import settings
 from src.common.llm import get_llm
@@ -37,6 +38,31 @@ from src.extraction.schemas import (
     FrequencyLevel,
     EvidenceLevel,
 )
+
+
+# ============================================================
+# Simple LLM Output Schema (for easier LLM generation)
+# ============================================================
+
+class SimpleDiseaseInfo(BaseModel):
+    """Simple disease info for LLM output"""
+    name: str = Field(description="疾病名称")
+    description: Optional[str] = Field(default=None, description="疾病描述")
+    icd_code: Optional[str] = Field(default=None, description="ICD编码")
+
+
+class SimpleLLMOutput(BaseModel):
+    """
+    Simple output schema for LLM extraction.
+    Uses string lists instead of entity objects for easier LLM generation.
+    """
+    disease: SimpleDiseaseInfo = Field(description="疾病基本信息")
+    symptoms: list[str] = Field(default_factory=list, description="症状名称列表")
+    medications: list[str] = Field(default_factory=list, description="药物名称列表")
+    departments: list[str] = Field(default_factory=list, description="科室名称列表")
+    examinations: list[str] = Field(default_factory=list, description="检查项目名称列表")
+    treatments: list[str] = Field(default_factory=list, description="治疗方案名称列表")
+    body_parts: list[str] = Field(default_factory=list, description="身体部位名称列表")
 
 logger = setup_logger(__name__, "extraction.log")
 
@@ -93,10 +119,79 @@ class DiseaseExtractor:
 }}""")
         ])
 
-        # Use structured output for type safety
+        # Use structured output with simple schema for easier LLM generation
         self.chain = self.prompt | self.llm.with_structured_output(
-            DiseaseExtractionResult,
+            SimpleLLMOutput,
             method="json_mode"
+        )
+
+    def _convert_to_result(self, simple: SimpleLLMOutput) -> DiseaseExtractionResult:
+        """Convert simple LLM output to full DiseaseExtractionResult"""
+        # Build disease entity
+        disease = DiseaseEntity(
+            name=simple.disease.name,
+            description=simple.disease.description,
+            icd_code=simple.disease.icd_code,
+        )
+
+        # Build symptom entities
+        symptoms = [SymptomEntity(name=s) for s in simple.symptoms if s]
+
+        # Build medication entities
+        medications = [MedicationEntity(name=m) for m in simple.medications if m]
+
+        # Build department entities
+        departments = [DepartmentEntity(name=d) for d in simple.departments if d]
+
+        # Build examination entities
+        examinations = [ExaminationEntity(name=e) for e in simple.examinations if e]
+
+        # Build treatment entities
+        treatments = [TreatmentEntity(name=t) for t in simple.treatments if t]
+
+        # Build body part entities
+        body_parts = [BodyPartEntity(name=bp) for bp in simple.body_parts if bp]
+
+        # Build relations
+        has_symptom_relations = [
+            HasSymptomRelation(disease_name=disease.name, symptom_name=s.name, frequency=FrequencyLevel.COMMON)
+            for s in symptoms
+        ]
+
+        treated_by_relations = [
+            TreatedByDrugRelation(disease_name=disease.name, drug_name=m.name, evidence_level=EvidenceLevel.B)
+            for m in medications
+        ]
+
+        department_relations = [
+            BelongsToDepartmentRelation(disease_name=disease.name, department_name=d.name, priority=1)
+            for d in departments
+        ]
+
+        examination_relations = [
+            NeedsExaminationRelation(disease_name=disease.name, examination_name=e.name, necessity="recommended")
+            for e in examinations
+        ]
+
+        body_part_relations = [
+            AffectsBodyPartRelation(disease_name=disease.name, body_part_name=bp.name)
+            for bp in body_parts
+        ]
+
+        return DiseaseExtractionResult(
+            disease=disease,
+            symptoms=symptoms,
+            medications=medications,
+            departments=departments,
+            examinations=examinations,
+            treatments=treatments,
+            body_parts=body_parts,
+            has_symptom_relations=has_symptom_relations,
+            treated_by_relations=treated_by_relations,
+            department_relations=department_relations,
+            examination_relations=examination_relations,
+            body_part_relations=body_part_relations,
+            extraction_confidence=0.9
         )
 
     @retry_on_error(max_retries=3, delay=1.0)
@@ -116,8 +211,11 @@ class DiseaseExtractor:
         logger.info(f"[EXTRACT] Starting disease extraction, text length: {len(text)}")
 
         try:
-            # Invoke the chain
-            result = self.chain.invoke({"text": text})
+            # Invoke the chain - returns SimpleLLMOutput
+            simple_result = self.chain.invoke({"text": text})
+
+            # Convert to full DiseaseExtractionResult
+            result = self._convert_to_result(simple_result)
 
             # Validate and log
             logger.info(f"[EXTRACT] Disease: {result.disease.name}")
