@@ -49,6 +49,56 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
+# ===== Predefined Disease List =====
+# Common diseases for medical knowledge graph (haodf.com disease IDs)
+# These are added to ensure we crawl enough data for the knowledge graph
+COMMON_DISEASES = [
+    # 心血管疾病
+    "gaoxueya", "guanxinbing", "xinjiquexue", "xinlvbuqi", "xinzangbing",
+    "dongmaizhouyangyinghua", "jingmaiquzhang", "naogengsi", "naochuxue",
+    # 呼吸系统疾病
+    "ganmao", "liugan", "feiyán", "qiguanyán", "xiaochuan", "manxingzusaixingfeibing",
+    "feijiehe", "feiai", "biyan", "yanyan",
+    # 消化系统疾病
+    "weiyán", "weikuiyang", "ganyán", "ganyinghua", "dangnangyan", "yixianyan",
+    "changweiyan", "bianmi", "fuxie", "zhichuang",
+    # 内分泌疾病
+    "tangniaobing", "jiazhuangxiankangjin", "jiazhuangxianjiejie", "gaozhixuezheng",
+    "tongfeng", "guzhisongshu", "feipangzheng",
+    # 神经系统疾病
+    "toutong", "touyun", "shimian", "jiaolvzheng", "yiyuzheng",
+    "dianxian", "pasenbing", "zhongfeng",
+    # 骨骼肌肉疾病
+    "guzhe", "guanzhijieyan", "guzhi-zengsheng", "yaotong", "jinzhouyan",
+    "jianzhouyan", "wangzhuzhouyan", "tongfeng-guanjeyan",
+    # 泌尿系统疾病
+    "shenyan", "shenjieshi", "niaolu-ganran", "qianliexianyan", "niaobing",
+    # 皮肤疾病
+    "pifuyan", "shizhen", "xuanyuan", "cuochuang", "tuofa",
+    # 眼科疾病
+    "jinshi", "yuanzhi", "sanquan", "qingguangzhan", "baineizhang",
+    # 耳鼻喉疾病
+    "zhongeryan", "biyiyan", "houyan", "biyan-guominxing",
+    # 妇科疾病
+    "yuedao-bing", "gongjingyan", "luanhuang-nangzhong", "zijiang-miyao",
+    # 儿科疾病
+    "xiaor-ganmao", "xiaor-fashao", "shouzu-koubing", "xiaor-fuxie",
+    # 肿瘤
+    "feiai", "ganai", "weichang-ai", "ruquan", "linbaliu",
+    # 传染病
+    "yigan", "binggan", "aizibing", "jiehe",
+    # 其他常见病
+    "pinyin", "pinxue", "guomin", "shuiyin", "tangshang",
+]
+
+# Generate full URLs from disease IDs
+def get_predefined_urls() -> list:
+    """Generate full haodf.com URLs from predefined disease IDs"""
+    return [
+        f"https://www.haodf.com/citiao/jibing-{disease_id}.html"
+        for disease_id in COMMON_DISEASES
+    ]
+
 # ===== Logging Setup =====
 
 log_dir = PROJECT_ROOT / "logs"
@@ -426,21 +476,28 @@ class MedicalCrawler:
 
     # ===== Main Crawl Logic =====
 
-    def run(self, max_diseases: int = 100, use_backup: bool = False):
+    def run(self, max_diseases: int = 100, use_backup: bool = False, use_predefined: bool = True):
         """
         Run the crawler
 
         Args:
             max_diseases: Maximum number of diseases to crawl
             use_backup: Whether to use xywy.com as backup source
+            use_predefined: Whether to use predefined disease list (recommended)
         """
         logger.info("=" * 60)
         logger.info(f"[START] Medical Crawler started at {datetime.now().isoformat()}")
-        logger.info(f"[CONFIG] Max diseases: {max_diseases}, Backup source: {use_backup}")
+        logger.info(f"[CONFIG] Max diseases: {max_diseases}, Backup: {use_backup}, Predefined: {use_predefined}")
         logger.info("=" * 60)
 
-        # Step 1: Crawl from haodf.com (primary source)
-        haodf_urls = self.crawl_haodf_list()
+        # Step 1: Get URLs from predefined list (recommended for comprehensive coverage)
+        if use_predefined:
+            predefined_urls = get_predefined_urls()
+            logger.info(f"[LIST] Using predefined disease list: {len(predefined_urls)} diseases")
+            haodf_urls = predefined_urls
+        else:
+            # Fallback: crawl from haodf.com list page (only ~15 diseases)
+            haodf_urls = self.crawl_haodf_list()
 
         for url in haodf_urls:
             if len(self.diseases) >= max_diseases:
@@ -525,6 +582,10 @@ def main():
     parser.add_argument(
         "--reset", action="store_true", help="Reset checkpoint and start fresh"
     )
+    parser.add_argument(
+        "--no-predefined", action="store_true",
+        help="Don't use predefined disease list (crawl from website list page only)"
+    )
 
     args = parser.parse_args()
 
@@ -533,7 +594,11 @@ def main():
         logger.info("[RESET] Checkpoint file deleted, starting fresh")
 
     crawler = MedicalCrawler()
-    crawler.run(max_diseases=args.max, use_backup=args.backup)
+    crawler.run(
+        max_diseases=args.max,
+        use_backup=args.backup,
+        use_predefined=not args.no_predefined
+    )
 
 
 if __name__ == "__main__":

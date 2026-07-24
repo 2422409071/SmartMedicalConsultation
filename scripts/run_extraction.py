@@ -347,30 +347,52 @@ def run_extraction(
         disease_name = disease_data.get("name", f"disease_{idx}")
 
         try:
-            # Build text for extraction
-            text = f"""
-疾病名称：{disease_name}
-疾病描述：{disease_data.get('description', '')}
-症状：{', '.join(disease_data.get('symptoms', []))}
-治疗：{disease_data.get('treatment', '')}
-科室：{disease_data.get('department', '')}
-"""
+            # Build comprehensive text for LLM extraction
+            # Include all available raw text for better extraction
+            text_parts = [
+                f"疾病名称：{disease_name}",
+            ]
 
-            # Extract using dict-based method (faster, no LLM call for structured data)
-            extraction_input = {
-                "disease": {
-                    "name": disease_name,
-                    "description": disease_data.get("description"),
-                },
-                "symptoms": disease_data.get("symptoms", []),
-                "medications": disease_data.get("medications", []),
-                "departments": [disease_data.get("department", "")] if disease_data.get("department") else [],
-                "examinations": [],
-                "treatments": [disease_data.get("treatment", "")] if disease_data.get("treatment") else [],
-                "body_parts": []
-            }
+            if disease_data.get('description'):
+                text_parts.append(f"疾病描述：{disease_data['description']}")
 
-            result = extractor.extract_from_dict(extraction_input)
+            if disease_data.get('symptoms'):
+                text_parts.append(f"症状：{', '.join(disease_data['symptoms'])}")
+
+            if disease_data.get('treatment'):
+                # Truncate very long treatment text to avoid token limits
+                treatment = disease_data['treatment']
+                if len(treatment) > 1500:
+                    treatment = treatment[:1500] + "..."
+                text_parts.append(f"治疗方法：{treatment}")
+
+            if disease_data.get('department'):
+                text_parts.append(f"就诊科室：{disease_data['department']}")
+
+            if disease_data.get('medications'):
+                text_parts.append(f"常用药物：{', '.join(disease_data['medications'])}")
+
+            text = "\n".join(text_parts)
+
+            # Use LLM extraction for better structured data
+            if use_llm:
+                logger.info(f"[EXTRACT] Using LLM for: {disease_name}")
+                result = extractor.extract(text)
+            else:
+                # Fallback to dict-based extraction (for testing/offline)
+                extraction_input = {
+                    "disease": {
+                        "name": disease_name,
+                        "description": disease_data.get("description"),
+                    },
+                    "symptoms": disease_data.get("symptoms", []),
+                    "medications": disease_data.get("medications", []),
+                    "departments": [disease_data.get("department", "")] if disease_data.get("department") else [],
+                    "examinations": [],
+                    "treatments": [disease_data.get("treatment", "")] if disease_data.get("treatment") else [],
+                    "body_parts": []
+                }
+                result = extractor.extract_from_dict(extraction_input)
 
             # Serialize
             entities = serialize_entities(result)
