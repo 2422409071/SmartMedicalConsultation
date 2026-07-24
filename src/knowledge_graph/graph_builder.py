@@ -66,6 +66,16 @@ NODE_CYPHER_TEMPLATES = {
         ON MATCH SET
             n.category = coalesce($category, n.category)
     """,
+    # Alias for backward compatibility
+    "Drug": """
+        MERGE (n:Medication {name: $name})
+        ON CREATE SET
+            n.category = $category,
+            n.side_effects = $side_effects,
+            n.contraindications = $contraindications
+        ON MATCH SET
+            n.category = coalesce($category, n.category)
+    """,
     "Department": """
         MERGE (n:Department {name: $name})
         ON CREATE SET
@@ -434,7 +444,7 @@ class KnowledgeGraphBuilder:
         elif node_type == "Symptom":
             params["description"] = data.get("description")
             params["severity"] = data.get("severity", "medium")
-        elif node_type == "Medication":
+        elif node_type == "Medication" or node_type == "Drug":
             params["category"] = data.get("category")
             params["side_effects"] = data.get("side_effects", [])
             params["contraindications"] = data.get("contraindications", [])

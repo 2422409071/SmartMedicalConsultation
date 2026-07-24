@@ -133,7 +133,7 @@ def serialize_entities(result) -> list[dict]:
     # Medications
     for m in result.medications:
         entities.append({
-            "type": "Drug",
+            "type": "Medication",
             "data": m.model_dump()
         })
 
