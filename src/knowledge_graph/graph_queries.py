@@ -332,8 +332,9 @@ class GraphQueries:
         """
         driver = self.get_driver()
         with driver.session() as session:
+            # Use BELONG_TO_DEPARTMENT relation (Disease -> Department)
             result = session.run("""
-                MATCH (dep:Department {name: $name})-[:HANDLES_DISEASE]->(d:Disease)
+                MATCH (d:Disease)-[:BELONG_TO_DEPARTMENT]->(dep:Department {name: $name})
                 RETURN d.name AS disease
                 ORDER BY d.name
             """, name=department_name)
