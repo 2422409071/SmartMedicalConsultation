@@ -141,7 +141,7 @@ class GraphQueries:
         driver = self.get_driver()
         with driver.session() as session:
             result = session.run("""
-                MATCH (d:Disease {name: $name})-[r:BELONGS_TO_DEPARTMENT]->(dep:Department)
+                MATCH (d:Disease {name: $name})-[r:BELONG_TO_DEPARTMENT]->(dep:Department)
                 RETURN dep.name AS department
                 ORDER BY r.priority
             """, name=disease_name)
