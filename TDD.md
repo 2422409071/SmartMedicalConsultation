@@ -7,10 +7,10 @@
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        用户界面层                             │
-│                   Streamlit 聊天界面                          │
-│                   (端口 8501)                                 │
+│               Vue 3 + Element Plus 聊天界面                   │
+│           (静态文件 dist/，由 FastAPI 同源托管)                │
 └────────────────────┬────────────────────────────────────────┘
-                     │ HTTP POST /process
+                     │ HTTP POST /api/consult
                      ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                        API 服务层                             │
@@ -43,68 +43,53 @@
 
 **分层设计**：
 
-1. **用户界面层**：Streamlit 聊天应用，负责用户交互
+1. **用户界面层**：Vue 3 + Element Plus 聊天应用，负责用户交互
 2. **API 服务层**：FastAPI REST API，负责请求路由和参数校验
 3. **Agent 系统层**：LangGraph 多 Agent 编排，负责业务逻辑
 4. **数据访问层**：Neo4j 知识图谱 + FAISS 向量索引，负责数据存储和检索
 
 **设计原则**：
 
-- 前后端分离：Streamlit 通过 HTTP 调用 FastAPI
+- 前后端分离：Vue 前端通过 HTTP 调用 FastAPI（生产模式前端构建为静态文件由 FastAPI 同源托管）
 - 模块化设计：每个 Agent 职责单一，易于测试和维护
 - 可扩展性：新增 Agent 不影响现有系统
 - 安全性：所有医疗建议强制添加免责声明
 
 ### 1.3 部署架构
 
-**开发环境**：
+**推荐方式：docker-compose 启动 Neo4j**（声明式、可复现、纳入版本控制）：
 
 ```bash
-# 1. 启动 Neo4j（Docker）
+# 1. 启动 Neo4j（项目根目录已提供 docker-compose.yml）
+docker-compose up -d
+
+# 常用管理命令
+docker-compose ps              # 查看状态
+docker-compose logs -f neo4j   # 查看日志
+docker-compose stop            # 停止
+docker-compose down            # 删除容器（保留数据卷 neo4j_data）
+
+# 2. 构建前端（首次或前端改动后）
+cd frontend && npm run build
+
+# 3. 启动 FastAPI（同时托管 API + 前端静态文件，单进程）
+python scripts/start_api.py
+# 访问 http://localhost:8000 即是完整应用
+
+# 开发模式（可选，前端热更新）：另开终端运行 cd frontend && npm run dev，访问 http://localhost:5173
+```
+
+**快速参考：docker run 单命令启动**（等价于上面的 compose，适合临时使用）：
+
+```bash
 docker run -d --name neo4j \
   -p 7474:7474 -p 7687:7687 \
   -e NEO4J_AUTH=neo4j/12345678 \
   -v neo4j_data:/data \
   neo4j:5.26
-
-# 2. 启动 FastAPI（终端 1）
-python scripts/start_api.py
-
-# 3. 启动 Streamlit（终端 2）
-streamlit run src/frontend/chat_app.py
 ```
 
-**生产环境**（可选）：
-
-```yaml
-# docker-compose.yml
-version: '3.8'
-services:
-  neo4j:
-    image: neo4j:5.26
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    volumes:
-      - neo4j_data:/data
-  
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    depends_on:
-      - neo4j
-  
-  frontend:
-    build: .
-    ports:
-      - "8501:8501"
-    depends_on:
-      - api
-
-volumes:
-  neo4j_data:
-```
+> **说明**：本项目采用单进程部署 —— FastAPI 同时托管 API 与 Vue 前端静态文件，因此唯一需要容器化的基础设施是 Neo4j。`docker-compose.yml` 中 Neo4j 使用 `external` 命名卷 `neo4j_data`，与 `docker run` 创建的卷同名，数据可无缝保留。
 
 ---
 
@@ -179,17 +164,23 @@ medical-consultation-assistant/
 │   │   ├── index_builder.py           # 索引构建
 │   │   └── search.py                  # 搜索功能
 │   │
-│   ├── api/                           # API 服务模块（扁平结构）
-│   │   ├── __init__.py
-│   │   ├── main.py                    # FastAPI 应用入口
-│   │   ├── consultation.py            # 问诊接口路由
-│   │   ├── health.py                  # 健康检查路由
-│   │   ├── request_schema.py          # 请求 Pydantic 模型
-│   │   └── response_schema.py         # 响应 Pydantic 模型
-│   │
-│   └── frontend/                      # 前端模块
+│   └── api/                           # API 服务模块（扁平结构）
 │       ├── __init__.py
-│       └── chat_app.py                # Streamlit 聊天应用
+│       ├── main.py                    # FastAPI 应用入口（含前端静态文件托管）
+│       ├── routes.py                  # API 路由（问诊/健康检查/统计）
+│       └── models.py                  # 请求/响应 Pydantic 模型
+│
+├── frontend/                          # 前端模块（Vue 3 + Element Plus 独立项目）
+│   ├── index.html                     # 入口 HTML
+│   ├── package.json                   # 依赖与脚本配置
+│   ├── vite.config.js                 # Vite 构建配置（含 /api 代理）
+│   ├── src/
+│   │   ├── main.js                    # 应用入口（挂载 Element Plus）
+│   │   ├── App.vue                    # 根组件
+│   │   ├── api/index.js               # axios 封装（调用 FastAPI）
+│   │   ├── views/ChatView.vue         # 聊天主界面
+│   │   └── components/                # 组件（消息气泡、免责声明横幅）
+│   └── dist/                          # npm run build 产物（静态文件，由 FastAPI 托管）
 │
 ├── data/                              # 数据目录
 │   ├── raw/                           # 原始数据（爬虫输出）
@@ -220,8 +211,7 @@ medical-consultation-assistant/
 │   ├── run_extraction.py              # 运行实体抽取
 │   ├── build_graph.py                 # 构建知识图谱
 │   ├── build_index.py                 # 构建向量索引
-│   ├── start_api.py                   # 启动 API 服务
-│   ├── start_frontend.py              # 启动前端
+│   ├── start_api.py                   # 启动 API 服务（同时托管前端静态文件）
 │   └── validate_environment.py        # 环境验证
 │
 └── tests/                             # 测试目录
@@ -1378,67 +1368,103 @@ class ConsultationResponse(BaseModel):
 
 ---
 
-#### 模块 8：前端模块 (`src/frontend/`)
+#### 模块 8：前端模块 (`frontend/`)
 
-**职责**：提供用户友好的聊天界面
+**职责**：提供用户友好的聊天界面（Vue 3 + Element Plus）
+
+**技术栈**：Vue 3（Composition API + `<script setup>`）+ Element Plus + Vite + axios
+
+**目录结构**：
+```
+frontend/
+├── index.html              # 入口 HTML
+├── package.json            # 依赖与脚本
+├── vite.config.js          # Vite 配置（含 /api 代理）
+├── src/
+│   ├── main.js             # 应用入口（挂载 Element Plus）
+│   ├── App.vue             # 根组件
+│   ├── api/index.js        # axios 封装（调用 FastAPI）
+│   ├── views/ChatView.vue  # 聊天主界面
+│   └── components/         # 消息气泡、免责声明横幅等组件
+└── dist/                   # npm run build 产物（由 FastAPI 托管）
+```
 
 **核心代码**：
 
-```python
-# frontend/chat_app.py
-import streamlit as st
-import requests
-import uuid
+```javascript
+// frontend/src/api/index.js —— axios 封装
+import axios from 'axios'
 
-# 页面配置
-st.set_page_config(
-    page_title="智能医疗问诊助手",
-    page_icon="🏥",
-    layout="wide"
-)
+const http = axios.create({ baseURL: '/api', timeout: 30000 })
 
-# 添加免责声明横幅
-st.warning("""
-⚠️ **重要声明**：本系统仅供健康咨询和就医指导，不能替代专业医疗诊断。
-身体不适一定要去正规医院找医生看病，千万不能自行用药或治疗！
-""")
+export function consult(query, sessionId) {
+  return http.post('/consult', { query, session_id: sessionId })
+}
+```
 
-# 初始化聊天记录
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+```vue
+<!-- frontend/src/views/ChatView.vue —— 聊天主界面（节选） -->
+<template>
+  <div class="chat-app">
+    <!-- 免责声明横幅（常驻顶部） -->
+    <el-alert type="warning" :closable="false"
+      title="本系统仅供健康咨询和就医指导，不能替代专业医疗诊断。身体不适请及时就医，切勿自行用药！" />
 
-# 显示历史消息
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+    <!-- 消息列表 -->
+    <div class="messages" ref="listRef">
+      <div v-for="(m, i) in messages" :key="i" :class="['bubble', m.role]">
+        {{ m.content }}
+        <!-- 推荐科室标签 -->
+        <el-tag v-for="d in m.departments" :key="d" type="success">{{ d }}</el-tag>
+        <!-- 急症警告 -->
+        <el-alert v-for="w in m.warnings" :key="w" type="error" :title="w" />
+      </div>
+    </div>
 
-# 用户输入
-if prompt := st.chat_input("请描述您的症状或健康问题..."):
-    # 显示用户消息
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-  
-    # 获取 AI 回答
-    with st.chat_message("assistant"):
-        with st.spinner("AI 正在分析您的问题..."):
-            # 调用 FastAPI 后端
-            url = "http://127.0.0.1:8000/api/process"
-            payload = {
-                "data": {
-                    "user_id": "user_01",
-                    "session_id": str(uuid.uuid4()),
-                    "user_content": prompt
-                }
-            }
-            response = requests.post(url, json=payload)
-            answer = response.json()["result"]["answer"]
-          
-            st.markdown(answer)
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": answer
-            })
+    <!-- 输入框 -->
+    <el-input v-model="input" :disabled="loading" @keyup.enter="send"
+      placeholder="请描述您的症状或健康问题..." />
+    <el-button type="primary" :loading="loading" @click="send">发送</el-button>
+  </div>
+</template>
+
+<script setup>
+import { ref, nextTick } from 'vue'
+import { consult } from '../api'
+
+const messages = ref([])       // 聊天历史（响应式）
+const input = ref('')
+const loading = ref(false)
+const listRef = ref(null)
+
+async function send() {
+  if (!input.value || loading.value) return
+  const query = input.value
+  messages.value.push({ role: 'user', content: query })
+  input.value = ''
+  loading.value = true
+  try {
+    const { data } = await consult(query, crypto.randomUUID())
+    messages.value.push({
+      role: 'assistant',
+      content: data.answer,
+      departments: data.departments || [],
+      warnings: data.warnings || []
+    })
+  } finally {
+    loading.value = false
+    nextTick(() => listRef.value?.scrollTo(0, listRef.value.scrollHeight))
+  }
+}
+</script>
+```
+
+**部署方式**：
+```bash
+cd frontend && npm run build        # 产出 dist/ 静态文件
+# FastAPI 中挂载（API 路由注册之后）：
+# app.mount("/", StaticFiles(directory="frontend/dist", html=True))
+# 单进程 :8000 同时服务 API 与前端页面
 ```
 
 ---
@@ -1463,7 +1489,7 @@ Neo4j 知识图谱（8 种节点，12 种关系）
 FastAPI（REST API）
     │ HTTP 请求
     ▼
-Streamlit（聊天界面）→ 用户
+Vue + Element Plus（聊天界面）→ 用户
 ```
 
 ### 3.2 详细数据流
@@ -1502,8 +1528,8 @@ Streamlit（聊天界面）→ 用户
 用户输入
     │
     ▼
-[Streamlit 前端]
-    │ HTTP POST /api/process
+[Vue + Element Plus 前端]
+    │ HTTP POST /api/consult
     ▼
 [FastAPI 后端]
     │ 调用 call_langgraph_ai()
@@ -1550,7 +1576,7 @@ Streamlit（聊天界面）→ 用户
 [FastAPI 返回响应]
     │ HTTP Response
     ▼
-[Streamlit 显示回答]
+[Vue 前端渲染回答]
     │
     ▼
 用户看到回答
@@ -1626,7 +1652,7 @@ messages: [..., "答案融合：完成"]
 | 向量检索   | sentence-transformers + FAISS     | 最新     | 语义搜索        | BGE-M3 多语言支持，FAISS 高效   |
 | Agent 编排 | LangGraph                         | 最新     | 多 Agent 状态图 | LangChain 生态，易于扩展        |
 | Web API    | FastAPI + Uvicorn                 | 最新     | REST 接口       | 高性能，自动生成文档            |
-| 前端界面   | Streamlit                         | 最新     | 聊天界面        | 快速开发，无需前端知识          |
+| 前端界面   | Vue 3 + Element Plus              | 最新     | 聊天界面        | 主流工程实现，构建为静态文件由 FastAPI 托管 |
 | 环境配置   | python-dotenv + pydantic-settings | 最新     | 环境变量        | 类型安全，配置验证              |
 
 ### 4.2 技术选型详细说明
@@ -1697,18 +1723,20 @@ messages: [..., "答案融合：完成"]
 - Flask：简单易用，但性能较低
 - Django：功能全面，但较重
 
-#### 前端界面：Streamlit
+#### 前端界面：Vue 3 + Element Plus
 
 **选型理由**：
 
-- 纯 Python 开发，无需前端知识
-- 快速原型开发
-- 内置聊天组件
+- 国内 AI 产品（Dify、Coze 等）的主流前端方案，工程化程度高
+- 编译型 SPA，虚拟 DOM 局部更新，性能优于 Streamlit 的全量重跑
+- 构建为纯静态文件（dist/），由 FastAPI 单进程同源托管，部署极简
+- Element Plus 组件库丰富，聊天界面、标签、警告框开箱即用
+- 真正的前后端分离，前端可独立部署到 Nginx/CDN
 
 **替代方案**：
 
-- Gradio：类似 Streamlit，但组件较少
-- React + Next.js：功能强大，但需要前端知识
+- Streamlit：纯 Python 开发，但非生产级主流，性能较差
+- React + Next.js：功能强大，国际主流，但学习成本较高
 
 ---
 
@@ -2020,25 +2048,29 @@ def test_api_endpoint():
 ### 8.1 开发环境
 
 ```bash
-# 1. 启动 Neo4j
-docker start neo4j
+# 1. 启动 Neo4j（推荐 docker-compose）
+docker-compose up -d
+# 或：docker start neo4j（若容器已存在）
 
-# 2. 启动 FastAPI
+# 2. 构建前端（首次或前端改动后）
+cd frontend && npm run build
+
+# 3. 启动 FastAPI（同时托管 API + 前端静态文件，单进程）
 python scripts/start_api.py
+# 访问 http://localhost:8000 即是完整应用
 
-# 3. 启动 Streamlit
-streamlit run src/frontend/chat_app.py
+# 开发模式（可选）：另开终端运行 cd frontend && npm run dev，访问 http://localhost:5173
 ```
 
 ### 8.2 生产环境
 
-**Docker Compose**：
+**Docker Compose**（项目根目录的 `docker-compose.yml`，唯一容器化基础设施为 Neo4j）：
 
 ```yaml
-version: '3.8'
 services:
   neo4j:
     image: neo4j:5.26
+    container_name: neo4j
     ports:
       - "7474:7474"
       - "7687:7687"
@@ -2046,26 +2078,15 @@ services:
       - NEO4J_AUTH=neo4j/12345678
     volumes:
       - neo4j_data:/data
-  
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    depends_on:
-      - neo4j
-    environment:
-      - NEO4J_URI=bolt://neo4j:7687
-  
-  frontend:
-    build: .
-    ports:
-      - "8501:8501"
-    depends_on:
-      - api
+    restart: unless-stopped
 
 volumes:
   neo4j_data:
+    external: true       # 复用已存在的同名卷，保留知识图谱数据
+    name: neo4j_data
 ```
+
+> **应用部署**：FastAPI（含前端静态文件）可用 Gunicorn + Uvicorn Worker 直接部署在宿主机或独立容器中，连接 `bolt://neo4j:7687`。前端构建产物 `frontend/dist` 由 FastAPI 同源托管，无需独立前端容器。
 
 **启动命令**：
 

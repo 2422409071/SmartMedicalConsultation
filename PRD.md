@@ -328,11 +328,16 @@ EMERGENCY_SYMPTOMS = [
 #### 功能 2：聊天界面
 **功能描述**：提供用户友好的聊天界面
 
+**技术方案**：Vue 3 + Element Plus（前端构建为静态文件，由 FastAPI 单进程托管）
+
 **功能要求**：
-- 类似微信的聊天界面
+- 类似微信的聊天界面（用户消息靠右、AI 消息靠左的气泡布局）
 - 支持 Markdown 格式展示
-- 显示免责声明横幅
-- 支持多轮对话
+- 顶部常驻免责声明横幅（el-alert 警告样式）
+- 推荐科室以标签（el-tag）形式展示
+- 急症警告以红色醒目提示（el-alert error 样式）
+- 支持多轮对话（使用 Vue 响应式状态管理聊天历史）
+- 请求时显示加载动画，禁用发送按钮防止重复提交
 
 #### 功能 3：REST API
 **功能描述**：提供 REST API 接口
@@ -721,7 +726,7 @@ EMERGENCY_SYMPTOMS = [
 - 知识图谱：Neo4j 5.26 LTS（Docker 部署）
 - 向量检索：FAISS + sentence-transformers（BGE-M3 模型）
 - Web API：FastAPI + Uvicorn
-- 前端界面：Streamlit
+- 前端界面：Vue 3 + Element Plus（构建为静态文件由 FastAPI 托管）
 - 数据处理：pandas、pydantic
 
 **性能要求**：
@@ -916,7 +921,8 @@ EMERGENCY_SYMPTOMS = [
 - LangGraph 官方文档：https://langchain-ai.github.io/langgraph/
 - Neo4j 官方文档：https://neo4j.com/docs/
 - FAISS 官方文档：https://github.com/facebookresearch/faiss
-- Streamlit 官方文档：https://docs.streamlit.io/
+- Vue 3 官方文档：https://cn.vuejs.org/
+- Element Plus 官方文档：https://element-plus.org/zh-CN/
 
 ### 8.3 联系方式
 
