@@ -71,6 +71,8 @@ class AnswerFusionAgent:
         advice = state.get("advice", [])
         disclaimers = state.get("disclaimers", [])
         warnings = state.get("warnings", [])
+        needs_clarify = state.get("needs_clarification", False)
+        clarification = state.get("clarification", "")
 
         # Build simple answer without LLM for reliability
         parts = []
@@ -80,31 +82,42 @@ class AnswerFusionAgent:
             parts.extend(warnings)
             parts.append("")
 
-        # Main content based on intent
-        if intent == "appointment":
+        # 信息不足：以追问为主，不输出空的科室/药物行
+        if needs_clarify and clarification:
+            parts.append("❓ " + clarification)
             if symptoms:
-                parts.append(f"📋 检测到的症状：{'、'.join(symptoms)}")
                 parts.append("")
-            if departments:
-                parts.append(f"🏥 推荐科室：{'、'.join(departments)}")
-                parts.append("")
-            if advice:
-                parts.append("💡 就医建议：")
-                for a in advice:
-                    parts.append(f"  - {a}")
-                parts.append("")
+                parts.append(f"📝 我已记录的信息：{'、'.join(symptoms)}")
+        else:
+            # Main content based on intent
+            if intent == "appointment":
+                if symptoms:
+                    parts.append(f"📋 检测到的症状：{'、'.join(symptoms)}")
+                    parts.append("")
+                if departments:
+                    parts.append(f"🏥 推荐科室：{'、'.join(departments)}")
+                    parts.append("")
+                else:
+                    # 有症状但三级回退仍未命中科室时，给出兜底引导
+                    parts.append("🏥 科室建议：建议先到**全科/导诊台**初筛，或补充症状细节后我再为您精确推荐。")
+                    parts.append("")
+                if advice:
+                    parts.append("💡 就医建议：")
+                    for a in advice:
+                        parts.append(f"  - {a}")
+                    parts.append("")
 
-        elif intent == "medication":
-            if medications:
-                parts.append("💊 药物建议：")
-                for med in medications:
-                    parts.append(f"  - {med.get('name', '')}")
-                parts.append("")
+            elif intent == "medication":
+                if medications:
+                    parts.append("💊 药物建议：")
+                    for med in medications:
+                        parts.append(f"  - {med.get('name', '')}")
+                    parts.append("")
 
-        elif intent == "knowledge":
-            if knowledge:
-                parts.append(knowledge)
-                parts.append("")
+            elif intent == "knowledge":
+                if knowledge:
+                    parts.append(knowledge)
+                    parts.append("")
 
         # Disclaimers at the end (MANDATORY)
         if disclaimers:

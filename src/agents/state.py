@@ -76,6 +76,13 @@ class AgentState(TypedDict, total=False):
     # ===== User Input =====
     query: str  # 用户原始问题
 
+    # ===== Conversation Memory（由 API 按 session_id 注入，不参与累加）=====
+    history: list  # 历史轮次 [{role, content, ...}]，供 Agent 读取上下文
+
+    # ===== Clarification（信息不足时的追问机制）=====
+    needs_clarification: bool  # 是否需要向用户追问
+    clarification: str         # 追问话术
+
     # ===== Intent Classification =====
     intent: str  # 意图类型: appointment | medication | knowledge | emergency | general
     intent_confidence: float  # 意图识别置信度 (0-1)
@@ -117,18 +124,22 @@ class AgentState(TypedDict, total=False):
 # Helper Functions
 # ============================================================
 
-def create_initial_state(query: str) -> AgentState:
+def create_initial_state(query: str, history: list | None = None) -> AgentState:
     """
-    Create initial state with user query
+    Create initial state with user query (and optional conversation history)
 
     Args:
         query: User's question
+        history: Prior conversation turns (from session memory)
 
     Returns:
         Initialized AgentState
     """
     return AgentState(
         query=query,
+        history=history or [],
+        needs_clarification=False,
+        clarification="",
         intent="",
         intent_confidence=0.0,
         symptoms=[],

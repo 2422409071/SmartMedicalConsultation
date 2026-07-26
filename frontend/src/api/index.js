@@ -7,7 +7,7 @@ import axios from 'axios'
  */
 const http = axios.create({
   baseURL: '/api',
-  timeout: 35000
+  timeout: 65000  // 略大于后端 60s 上限，避免后端仍在处理时前端先报错
 })
 
 /**

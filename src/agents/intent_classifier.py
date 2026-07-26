@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from src.common.llm import get_llm
 from src.common.logger import setup_logger
+from src.common.memory import format_history
 from src.agents.state import AgentState, IntentType
 
 logger = setup_logger(__name__, "agents.log")
@@ -61,7 +62,11 @@ Few-shot 示例：
 用户：我最近总是头晕，想去医院看看
 意图：appointment，置信度：0.88
 
-请分析以下用户问题，返回意图类型和置信度。"""
+多轮示例：
+历史：助手：为了推荐科室，请补充您的症状… / 用户：就是头疼
+→ 结合历史，本轮是在补充挂号所需症状，意图仍为 appointment。
+
+请结合【对话历史】与【本轮用户输入】，返回意图类型和置信度。"""
 
 
 class IntentClassifierAgent:
@@ -72,16 +77,17 @@ class IntentClassifierAgent:
         self.chain = self.llm.with_structured_output(IntentResult)
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPT),
-            ("user", "{query}")
+            ("user", "【对话历史】\n{history}\n\n【本轮用户输入】\n{query}")
         ])
 
     def __call__(self, state: AgentState) -> dict:
         """Process state and return update"""
         query = state.get("query", "")
+        history_text = format_history(state.get("history", []))
         logger.info(f"[IntentClassifier] Processing: {query[:50]}...")
 
         try:
-            messages = self.prompt.format_messages(query=query)
+            messages = self.prompt.format_messages(history=history_text, query=query)
             result = self.chain.invoke(messages)
 
             logger.info(f"[IntentClassifier] Result: {result.intent} ({result.confidence:.2f})")

@@ -64,7 +64,9 @@ NODE_CYPHER_TEMPLATES = {
             n.side_effects = $side_effects,
             n.contraindications = $contraindications
         ON MATCH SET
-            n.category = coalesce($category, n.category)
+            n.category = coalesce($category, n.category),
+            n.side_effects = coalesce($side_effects, n.side_effects),
+            n.contraindications = coalesce($contraindications, n.contraindications)
     """,
     # Alias for backward compatibility
     "Drug": """
@@ -74,7 +76,9 @@ NODE_CYPHER_TEMPLATES = {
             n.side_effects = $side_effects,
             n.contraindications = $contraindications
         ON MATCH SET
-            n.category = coalesce($category, n.category)
+            n.category = coalesce($category, n.category),
+            n.side_effects = coalesce($side_effects, n.side_effects),
+            n.contraindications = coalesce($contraindications, n.contraindications)
     """,
     "Department": """
         MERGE (n:Department {name: $name})

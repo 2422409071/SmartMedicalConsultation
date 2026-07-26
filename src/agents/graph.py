@@ -56,7 +56,9 @@ def route_after_symptom(state: AgentState) -> str:
     if intent == IntentType.APPOINTMENT:
         return "department_recommender"
     elif intent == IntentType.MEDICATION:
-        return "medication_advisor"
+        # 无疾病/症状锚点时 medication_advisor 无从下手（含"含药名/相互作用/副作用"等事实问句）；
+        # 交给能用 get_medication_info 等工具的 ReAct 知识 Agent，一轮答完。
+        return "medical_knowledge" if not state.get("symptoms") else "medication_advisor"
     else:
         return "safety_checker"
 
@@ -105,6 +107,7 @@ def build_graph() -> StateGraph:
         {
             "department_recommender": "department_recommender",
             "medication_advisor": "medication_advisor",
+            "medical_knowledge": "medical_knowledge",   # medication 无锚点时的二级路由
             "safety_checker": "safety_checker"
         }
     )
@@ -144,20 +147,21 @@ app = graph.compile()
 # Run Function
 # ============================================================
 
-def run(query: str) -> AgentState:
+def run(query: str, history: list | None = None) -> AgentState:
     """
     Run the medical consultation system
 
     Args:
         query: User's question
+        history: Prior conversation turns (from session memory) for multi-turn context
 
     Returns:
         Final AgentState with all results
     """
-    logger.info(f"[Graph] Starting consultation: {query[:50]}...")
+    logger.info(f"[Graph] Starting consultation: {query[:50]}... (history turns: {len(history or [])})")
 
-    # Create initial state
-    initial_state = create_initial_state(query)
+    # Create initial state (with conversation history for multi-turn memory)
+    initial_state = create_initial_state(query, history=history)
 
     # Run the graph
     result = app.invoke(initial_state)

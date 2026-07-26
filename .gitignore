@@ -95,3 +95,6 @@ docker-compose.override.yml
 *.pid
 *.seed
 *.pid.lock
+
+# 评估 runner 每次运行生成的报告（已嵌入讲义 §5.6，不入库）
+evals/last_report.md

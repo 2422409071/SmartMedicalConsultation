@@ -17,6 +17,7 @@ if str(_project_root) not in sys.path:
 from fastapi import APIRouter, HTTPException
 
 from src.common.logger import setup_logger
+from src.common.memory import memory
 from src.api.models import (
     ConsultationRequest,
     ConsultationResponse,
@@ -30,7 +31,9 @@ logger = setup_logger(__name__, "api.log")
 router = APIRouter()
 
 # Timeout configuration
-REQUEST_TIMEOUT = 30  # seconds
+# 安全上限：典型轮次 2-8s；带记忆+多 Agent+LLM 兜底的轮次偶有更慢，故放宽上限。
+# 真正的体验优化应走流式输出（见 §5.4 性能优化），此处仅为防失控的天花板。
+REQUEST_TIMEOUT = 60  # seconds
 
 
 # ============================================================
@@ -99,11 +102,14 @@ async def consult(req: ConsultationRequest):
             # Call Agent system with timeout
             from src.agents.graph import run
 
+            # 加载会话记忆（本轮之前的历史），实现多轮上下文
+            history = memory.get_history(req.session_id, n=10)
+
             try:
                 # Run in thread pool to not block event loop
                 result = await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(
-                        None, run, req.query
+                        None, run, req.query, history
                     ),
                     timeout=REQUEST_TIMEOUT
                 )
@@ -130,6 +136,15 @@ async def consult(req: ConsultationRequest):
                     duration_ms=duration_ms,
                     has_disclaimer=len(disclaimers) > 0,
                     success=True
+                )
+
+                # 写入会话记忆（用户问 + 助手答 + 结构化信息），供下一轮使用
+                memory.add_turn(req.session_id, "user", req.query)
+                memory.add_turn(
+                    req.session_id, "assistant", response.answer,
+                    intent=response.intent,
+                    symptoms=response.symptoms,
+                    departments=response.departments,
                 )
 
                 return response
@@ -167,9 +182,14 @@ async def consult(req: ConsultationRequest):
 
         logger.error(f"[API] Consultation failed: {e}")
 
+        err_answer = "抱歉，系统暂时无法处理您的请求。请稍后重试，或拨打医疗咨询热线 12320。"
+        # 记录本轮，避免上下文断裂
+        memory.add_turn(req.session_id, "user", req.query)
+        memory.add_turn(req.session_id, "assistant", err_answer, intent="error")
+
         # Return friendly error
         return ConsultationResponse(
-            answer="抱歉，系统暂时无法处理您的请求。请稍后重试，或拨打医疗咨询热线 12320。",
+            answer=err_answer,
             intent="error",
             disclaimers=["🔴 重要声明：本建议仅供参考，不能替代专业医疗诊断。"],
             duration_ms=duration_ms
