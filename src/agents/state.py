@@ -115,6 +115,7 @@ class AgentState(TypedDict, total=False):
     # ===== Retrieved Entities =====
     retrieved_entities: Annotated[list[dict], operator.add]  # 检索到的知识图谱实体（累加）
     # 每个实体: {"name": str, "type": str, "score": float, "source": str}
+    retrieved_contexts: Annotated[list, operator.add]  # ReAct 工具返回的检索上下文（供 RAGAS 评估）
 
     # ===== Debug Messages =====
     messages: Annotated[list[str], operator.add]  # 调试消息（累加）
@@ -153,6 +154,7 @@ def create_initial_state(query: str, history: list | None = None) -> AgentState:
         warnings=[],
         final_answer="",
         retrieved_entities=[],
+        retrieved_contexts=[],
         messages=[f"[START] User query: {query}"]
     )
 

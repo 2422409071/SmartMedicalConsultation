@@ -22,13 +22,19 @@ MANDATORY_DISCLAIMER = """🔴 重要声明：本建议仅供参考，不能替�
 # Emergency warning template
 EMERGENCY_WARNING = """🚨 紧急警告：您描述的症状可能是急症表现，请立即拨打 120 或前往最近的医院急诊科！"""
 
-# Emergency keywords
+# 急症关键词（**高精度**确定性兜底：临床红旗词 + 少量无歧义的重症口语）。
+# 口语化表述的高召回由意图识别(LLM)兜住（见 __call__ 中 intent=="emergency"）；
+# 本列表是"即便意图识别失灵也必须拦下"的最后一道确定性防线，故宁精勿滥、不放宽泛词。
 EMERGENCY_KEYWORDS = [
-    "胸痛", "胸闷", "呼吸困难", "喘不过气", "窒息",
-    "意识模糊", "昏迷", "晕厥", "抽搐",
-    "大出血", "吐血", "咳血", "便血",
-    "剧烈腹痛", "突然失明", "肢体麻木", "偏瘫",
-    "高烧不退", "严重过敏"
+    # 心 / 呼吸
+    "胸痛", "胸闷", "呼吸困难", "喘不过气", "喘不上气", "窒息", "憋气",
+    # 意识 / 神经
+    "意识模糊", "昏迷", "晕厥", "不省人事", "抽搐", "口吐白沫", "晕倒在地",
+    "突然失明", "眼前一黑", "肢体麻木", "半身不遂", "偏瘫",
+    # 出血
+    "大出血", "吐血", "咳血", "便血", "呕血",
+    # 剧痛 / 高热 / 过敏
+    "剧烈腹痛", "痛得打滚", "疼得打滚", "高烧不退", "持续高烧", "退不下来", "严重过敏",
 ]
 
 
@@ -44,6 +50,7 @@ class SafetyCheckerAgent:
     def __call__(self, state: AgentState) -> dict:
         """Process state and return update"""
         query = state.get("query", "")
+        intent = state.get("intent", "")
         symptoms = state.get("symptoms", [])
         is_emergency = state.get("is_emergency", False)
         severity = state.get("severity", "")
@@ -64,12 +71,14 @@ class SafetyCheckerAgent:
                 detected_emergency = True
                 break
 
-        if detected_emergency or is_emergency or severity == "emergency":
+        # 主信号 = 意图识别(LLM)判定为急症：能覆盖口语化表述（"眼睛看不见""烧到40度退不下来""痛得打滚"），
+        # 这是关键词精确匹配兜不住的高召回来源。急症宁可误报、不可漏报（医疗安全优先）。
+        if detected_emergency or is_emergency or severity == "emergency" or intent == "emergency":
             warnings.append(EMERGENCY_WARNING)
-            logger.warning("[SafetyChecker] EMERGENCY detected!")
+            logger.warning(f"[SafetyChecker] EMERGENCY detected! (keyword={detected_emergency}, intent={intent})")
 
-        # 3. Medication safety warnings
-        if medications:
+        # 3. Medication safety warnings（用药意图一律提醒，即便未给具体药物）
+        if medications or intent == "medication":
             disclaimers.append("⚠️ 用药提醒：请在医生或药师指导下用药，不要自行调整剂量或停药。")
 
             # Check for special populations
@@ -88,7 +97,7 @@ class SafetyCheckerAgent:
         return {
             "disclaimers": disclaimers,
             "warnings": warnings,
-            "is_emergency": is_emergency or detected_emergency,
+            "is_emergency": is_emergency or detected_emergency or intent == "emergency",
             "messages": [f"[SafetyChecker] Added {len(disclaimers)} disclaimers, {len(warnings)} warnings"]
         }
 

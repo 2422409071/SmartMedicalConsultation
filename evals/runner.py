@@ -140,7 +140,9 @@ def eval_case(case, base_url=None):
         "knowledge": None,
     }
     if ("knowledge" in case.get("tags", [])) or gold.get("reference_answer") or gold.get("supporting_facts"):
-        m["knowledge"] = judge_answer(answer, query, gold.get("reference_answer"), gold.get("supporting_facts"))
+        rc = (state or {}).get("retrieved_contexts", []) if state is not None else []
+        m["knowledge"] = judge_answer(answer, query, gold.get("reference_answer"),
+                                      gold.get("supporting_facts"), rc)
     return m
 
 
@@ -167,8 +169,14 @@ def aggregate(rows, thr_intent, thr_emergency):
     must = [r for r in rows if r["must_disclaimer"]]
     disc_cov = (sum(1 for r in must if r["disclaimer_present"]) / len(must)) if must else 1.0
 
-    # knowledge correctness mean
+    # knowledge correctness mean (LLM 裁判)
     kcorr = _mean([r["knowledge"]["correctness"] for r in rows if r["knowledge"] and r["knowledge"].get("correctness") is not None])
+    # RAGAS 四指标均值（仅在同时具备 reference + 实检索上下文的用例上计算）
+    def _rk(k):
+        return _mean([r["knowledge"][k] for r in rows if r["knowledge"] and isinstance(r["knowledge"].get(k), (int, float))])
+    ragas = {"faithfulness": _rk("faithfulness"), "answer_relevancy": _rk("answer_relevancy"),
+             "context_precision": _rk("context_precision"), "context_recall": _rk("context_recall")}
+    ragas_n = sum(1 for r in rows if r["knowledge"] and isinstance(r["knowledge"].get("faithfulness"), (int, float)))
 
     lat = [r["latency_ms"] for r in rows]
 
@@ -188,7 +196,7 @@ def aggregate(rows, thr_intent, thr_emergency):
         "dept_hit@3": dept_hit, "dept_recall": dept_rec,
         "clarify_P": clar_p, "clarify_R": clar_r, "clarify_F1": clar_f1,
         "emergency_recall": emer_rec, "disclaimer_coverage": disc_cov,
-        "knowledge_correctness": kcorr,
+        "knowledge_correctness": kcorr, "ragas": ragas, "ragas_n": ragas_n,
         "latency_p50": _pct(lat, 0.5), "latency_p95": _pct(lat, 0.95), "latency_p99": _pct(lat, 0.99),
         "composite": composite, "gate_ok": gate_ok,
         "thr_intent": thr_intent, "thr_emergency": thr_emergency,
@@ -203,7 +211,7 @@ def _f(v, pct=False):
 
 def write_report(rows, agg, mode, path):
     L = [f"# 评估报告  ({mode})", "",
-         f"- 用例数：{len(rows)}　综合分：**{agg['composite']:.3f}**　门禁：{'✅ PASS' if agg['gate_ok'] else '❌ FAIL'}",
+         f"- 用例数：{len(rows)}　综合分：**{agg['composite']:.3f}**　门禁：{'✅ PASS' if agg['gate_ok'] else '❌ FAIL'}　RAGAS 覆盖用例：{agg['ragas_n']}",
          f"- 门禁阈值：intent≥{agg['thr_intent']}　emergency_recall≥{agg['thr_emergency']}　disclaimer_coverage=1.0", "",
          "| 维度 | 值 |", "|------|------|",
          f"| intent_accuracy | {_f(agg['intent_accuracy'], True)} |",
@@ -213,7 +221,11 @@ def write_report(rows, agg, mode, path):
          f"| clarify P / R / F1 | {_f(agg['clarify_P'], True)} / {_f(agg['clarify_R'], True)} / {_f(agg['clarify_F1'], True)} |",
          f"| emergency_recall | {_f(agg['emergency_recall'], True)} |",
          f"| disclaimer_coverage | {_f(agg['disclaimer_coverage'], True)} |",
-         f"| knowledge_correctness | {_f(agg['knowledge_correctness'])} |",
+         f"| RAGAS faithfulness | {_f(agg['ragas']['faithfulness'])} |",
+         f"| RAGAS answer_relevancy | {_f(agg['ragas']['answer_relevancy'])} |",
+         f"| RAGAS context_precision | {_f(agg['ragas']['context_precision'])} |",
+         f"| RAGAS context_recall | {_f(agg['ragas']['context_recall'])} |",
+         f"| LLM裁判 correctness | {_f(agg['knowledge_correctness'])} |",
          f"| latency p50 / p95 / p99 | {agg['latency_p50']:.0f} / {agg['latency_p95']:.0f} / {agg['latency_p99']:.0f} ms |",
          "", "## 逐条", "", "| id | intent✓ | sympF1 | deptHit | clarify? | emer? | disc✓ | ms |",
          "|----|--------|--------|---------|----------|-------|-------|----|"]

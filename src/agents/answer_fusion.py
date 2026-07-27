@@ -74,57 +74,33 @@ class AnswerFusionAgent:
         needs_clarify = state.get("needs_clarification", False)
         clarification = state.get("clarification", "")
 
-        # Build simple answer without LLM for reliability
+        # 正文只放"前端未单独结构化渲染"的散文：
+        #   症状/科室/药物 → 前端标签区(chips)；急症警告 → 前端 el-alert；免责声明 → 前端免责块。
+        #   故正文不再嵌入这些，避免同一条科室/免责声明在界面出现两次。
         parts = []
 
-        # Emergency warnings first
-        if warnings:
-            parts.extend(warnings)
-            parts.append("")
-
-        # 信息不足：以追问为主，不输出空的科室/药物行
         if needs_clarify and clarification:
+            # 追问话术没有对应的结构化字段，必须放进正文
             parts.append("❓ " + clarification)
-            if symptoms:
+        elif intent == "appointment":
+            if not departments:
+                # 有症状但仍未命中科室时的兜底引导（科室若有则由前端标签展示）
+                parts.append("🏥 科室建议：建议先到**全科/导诊台**初筛，或补充症状细节后我再为您精确推荐。")
                 parts.append("")
-                parts.append(f"📝 我已记录的信息：{'、'.join(symptoms)}")
-        else:
-            # Main content based on intent
-            if intent == "appointment":
-                if symptoms:
-                    parts.append(f"📋 检测到的症状：{'、'.join(symptoms)}")
-                    parts.append("")
-                if departments:
-                    parts.append(f"🏥 推荐科室：{'、'.join(departments)}")
-                    parts.append("")
-                else:
-                    # 有症状但三级回退仍未命中科室时，给出兜底引导
-                    parts.append("🏥 科室建议：建议先到**全科/导诊台**初筛，或补充症状细节后我再为您精确推荐。")
-                    parts.append("")
-                if advice:
-                    parts.append("💡 就医建议：")
-                    for a in advice:
-                        parts.append(f"  - {a}")
-                    parts.append("")
+            if advice:
+                parts.append("💡 就医建议：")
+                for a in advice:
+                    parts.append(f"  - {a}")
+        elif intent == "medication":
+            if knowledge:
+                parts.append(knowledge)
+        elif intent == "knowledge":
+            if knowledge:
+                parts.append(knowledge)
+        elif intent == "emergency":
+            parts.append("您描述的情况可能较为紧急，请立即就医或拨打 120（详见上方紧急警告）。")
 
-            elif intent == "medication":
-                if medications:
-                    parts.append("💊 药物建议：")
-                    for med in medications:
-                        parts.append(f"  - {med.get('name', '')}")
-                    parts.append("")
-
-            elif intent == "knowledge":
-                if knowledge:
-                    parts.append(knowledge)
-                    parts.append("")
-
-        # Disclaimers at the end (MANDATORY)
-        if disclaimers:
-            parts.append("")
-            parts.extend(disclaimers)
-
-        final_answer = "\n".join(parts)
+        final_answer = "\n".join(parts).strip()
 
         logger.info(f"[AnswerFusion] Final answer: {len(final_answer)} chars")
 

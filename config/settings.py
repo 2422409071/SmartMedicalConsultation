@@ -82,6 +82,13 @@ class Settings(BaseSettings):
         description="Streamlit frontend port"
     )
 
+    # ===== Agent Configuration =====
+    enable_react_layer: bool = Field(
+        default=True,
+        description="医学知识分支是否在『强制检索』之上再启用可选 ReAct 多跳层（tool-calling）。"
+                    "强制检索是 grounding 底线、必走；ReAct 仅作多跳补充与工具调用演示。关闭则纯强制检索，更快更省。"
+    )
+
 
 @lru_cache()
 def get_settings() -> Settings:

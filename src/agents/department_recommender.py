@@ -32,12 +32,20 @@ class DeptFallback(BaseModel):
 
 
 DEPT_FALLBACK_PROMPT = """你是资深医院导诊专家。请根据【症状】【本轮输入】【对话历史】推荐最合适的 1-3 个就诊科室。
+【图谱参考候选科室】（由"症状→疾病→科室"宽松聚合而来，可能含噪声，仅供取舍参考）：{kg_candidates}
 
 规则：
-- 依据症状的解剖部位/系统判断科室（如眼部症状→眼科；胸痛→心内科/急诊；腹痛→消化内科/普外科）。
+- 依据症状的解剖部位/系统判断科室（如眼部→眼科；头痛/头晕→神经内科；胸痛→心内科/急诊；腹痛→消化内科；咳嗽发热→呼吸内科；皮疹→皮肤科；拔牙/牙齿/口腔→口腔科）。
 - 给出 1-3 个科室，按优先级排序，并简述理由。
-- 只有当症状信息确实太少、无法判断时，departments 才返回空列表，并在 follow_up 写明需要追问的内容（部位、持续时间、伴随症状、诱因等）。
-- 只输出结构化结果，不要寒暄。"""
+- 可参考图谱候选，但**必须过滤掉与本次症状明显不符的**（如单纯头痛不应推荐儿科/感染科，除非确有相关症状）；图谱缺了正确科室时可据医学知识补上。
+- 若本轮是明确的就诊诉求（如拔牙、配镜、体检），即使没有"症状"也直接给出对应科室。
+- 只有当信息确实太少、无法判断时，departments 才返回空列表，并在 follow_up 写明需要追问的内容（部位、持续时间、伴随症状、诱因等）。
+- 只输出结构化结果，不要寒暄。
+
+示例：
+- 本轮"我最近头痛、头晕" → departments:["神经内科"]（或 ["神经内科","全科医学科"]）
+- 本轮"我想拔牙，挂什么科" → departments:["口腔科"]（明确诉求，无需症状）
+- 本轮"我该挂什么科"（无任何症状/诉求）→ departments:[]，follow_up:"请描述具体不适部位、持续时间、伴随症状等"。"""
 
 
 class DepartmentRecommenderAgent:
@@ -61,14 +69,15 @@ class DepartmentRecommenderAgent:
             logger.warning(f"[DepartmentRecommender] graph tier error: {e}")
         return list(dict.fromkeys(depts))
 
-    # ---------- Tier 2: LLM 兜底 ----------
-    def _tier_llm(self, symptoms: list[str], query: str, history: list) -> DeptFallback:
+    # ---------- Tier 2: LLM 导诊（结合症状 + 图谱候选，做最终取舍） ----------
+    def _tier_llm(self, symptoms: list[str], query: str, history: list, kg_candidates: list[str]) -> DeptFallback:
         from langchain_core.prompts import ChatPromptTemplate
         prompt = ChatPromptTemplate.from_messages([
             ("system", DEPT_FALLBACK_PROMPT),
             ("user", "【症状】{symptoms}\n【本轮输入】{query}\n【对话历史】{history}")
         ])
         msgs = prompt.format_messages(
+            kg_candidates="、".join(kg_candidates) if kg_candidates else "（无）",
             symptoms="、".join(symptoms) if symptoms else "（未明确）",
             query=query,
             history=format_history(history),
@@ -81,39 +90,42 @@ class DepartmentRecommenderAgent:
         history = state.get("history", [])
         logger.info(f"[DepartmentRecommender] Symptoms: {symptoms}")
 
+        # Tier 1：图谱候选（症状→疾病→科室的宽松聚合），用于溯源 + 给 LLM 当参考；含噪声，不直接采用
+        kg_depts = self._tier_graph(symptoms) if symptoms else []
+
+        # Tier 2：LLM 导诊做最终取舍——结合症状与图谱候选，过滤噪声（如头痛牵出的儿科/感染科），
+        # 也能在图谱缺失时补上正确科室；明确就诊诉求（拔牙→口腔科）无需症状也可直接给出。
         departments: list[str] = []
-        source = "none"
         follow_up = ""
+        try:
+            fb = self._tier_llm(symptoms, query, history, kg_candidates=kg_depts)
+            departments = (fb.departments or [])[:5]
+            follow_up = fb.follow_up or ""
+            logger.info(f"[DepartmentRecommender] LLM -> {departments} | reason={fb.reason}")
+        except Exception as e:
+            logger.error(f"[DepartmentRecommender] LLM error: {e}")
 
-        # Tier 1：图谱精确匹配（高置信）
-        if symptoms:
-            departments = self._tier_graph(symptoms)
-            if departments:
-                source = "graph"
+        # 融合：LLM 优先；LLM 为空时回退图谱候选
+        if departments:
+            source = "llm+graph" if kg_depts else "llm"
+        elif kg_depts:
+            departments = kg_depts[:5]
+            source = "graph"
+        else:
+            source = "none"
 
-        # Tier 2：LLM 知识兜底（图谱未覆盖时，靠大模型医学常识；
-        # 注：不再使用向量层做科室映射——在小知识图谱上向量近邻噪声大，
-        # 会把"左眼疼痛"错误映射到无关科室，反而遮蔽正确的 LLM 判断）
-        if not departments:
-            try:
-                fb = self._tier_llm(symptoms, query, history)
-                departments = fb.departments or []
-                follow_up = fb.follow_up or ""
-                source = "llm" if departments else "llm(empty)"
-                logger.info(f"[DepartmentRecommender] LLM fallback -> {departments} | reason={fb.reason}")
-            except Exception as e:
-                logger.error(f"[DepartmentRecommender] LLM fallback error: {e}")
-
-        departments = departments[:5]
-        logger.info(f"[DepartmentRecommender] Recommended: {departments} (source={source})")
+        logger.info(f"[DepartmentRecommender] Recommended: {departments} (source={source}, kg={kg_depts})")
 
         update = {
             "departments": departments,
             "messages": [f"[DepartmentRecommender] Recommended: {departments} (source={source})"]
         }
 
-        # 兜底仍为空且有追问建议 → 触发追问
-        if not departments and follow_up:
+        if departments:
+            # 已能确定科室 → 取消上游"无症状→追问"的默认追问（如"我想拔牙"→口腔科，无需追问）
+            update["needs_clarification"] = False
+        elif follow_up:
+            # 确实信息不足 → 追问
             update["needs_clarification"] = True
             update["clarification"] = follow_up
 
