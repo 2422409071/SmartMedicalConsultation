@@ -108,3 +108,19 @@ def get_medication_info(name: str) -> str:
     except Exception as e:
         logger.warning(f"[tool get_medication_info] {e}")
         return f"查询药物信息失败：{e}"
+
+
+@tool
+def natural_language_graph_query(query: str) -> str:
+    """用自然语言灵活查询知识图谱（内部自动生成并执行只读 Cypher，即 Text2Cypher）。
+    比 search_knowledge_graph 更适合复杂/灵活的查询：多跳关系、条件过滤、聚合列举等
+    （如"高血压对应的科室和一线用药分别是什么""哪些疾病可以用阿司匹林治疗"）。
+    建议在 query 中带上已知的规范实体名（可先参考 semantic_search 的链接结果）。
+    查询在只读事务中执行并有记录数上限；返回结构化图谱记录，无法生成有效查询时返回说明文本。"""
+    try:
+        from src.knowledge_graph.text2cypher import get_engine
+        result = get_engine().run(query)
+        return result.get("text") or "图谱查询无结果"
+    except Exception as e:
+        logger.warning(f"[tool natural_language_graph_query] {e}")
+        return f"图谱查询失败：{e}"

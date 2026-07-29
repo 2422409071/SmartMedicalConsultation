@@ -6,17 +6,25 @@ Medical Knowledge Agent —— 企业级「强制检索打底 + 可选 ReAct 多
      KG 没被用上、答案不可溯源（faithfulness 极低）。
   v2 纯强制检索：grounding 有保证，但没有工具调用能力、无法多跳。
   v3（当前）grounded-ReAct：
+     Step 2 显式实体链接（Entity Linking）：在强制检索之后，把检索命中实体 + 本轮
+            症状词 + 问题文本经 BGE-M3+FAISS 高精度链接到图谱规范实体
+            （阈值 settings.entity_link_threshold，默认 0.85），
+            链接结果写入 state["linked_entities"]（供 API/前端展示），并作为实体提示
+            注入 ReAct 系统消息，供 Text2Cypher 工具做精确查询条件。
+            （仅用整句问题做链接几乎必然低于阈值，必须并入检索命中词才有可用锚点。）
      Step 1 强制混合检索（FAISS 召回 → Neo4j 取事实）——**grounding 底线，必走**，
             保证每条事实答案都可溯源、模型无法跳过。
      Step 2 在检索结果之上，可选启用 ReAct 工具调用层做**多跳补充**
-            （如"某病的用药 → 该药的副作用/相互作用"），复用 src/agents/tools.py 的三个 @tool。
+            （如"某病的用药 → 该药的副作用/相互作用"），复用 src/agents/tools.py 的 @tool；
+            settings.text2cypher_enabled 开启时额外提供 natural_language_graph_query
+            （Text2Cypher，只读事务五层防护）。
             即便模型在 ReAct 里不调工具，grounding 仍由 Step 1 兜住（检索内容始终在 prompt 里）。
      Step 3 分风险兜底：检索为空时——一般知识题用 LLM 通用知识并标注"非知识库内容"；
             高风险（用药相互作用/剂量/禁忌/过敏/饮酒）**绝不臆测**，直接建议咨询医生/药师。
 
   开关：settings.enable_react_layer（默认 True）。关闭则 Step 2 退化为纯 grounded 生成（更快更省）。
 
-只写 state["knowledge_answer"]（+ retrieved_contexts/retrieved_entities + 调试 messages）。
+只写 state["knowledge_answer"]（+ retrieved_contexts/retrieved_entities/linked_entities + 调试 messages）。
 节点名与导出单例名 `medical_knowledge` 不变 → graph.py 的 import/add_node/所有边**零改动**；
 其后 safety_checker -> answer_fusion 照常运行，免责声明不丢。
 """
@@ -37,7 +45,12 @@ from src.common.logger import setup_logger
 from src.common.memory import format_history
 from src.agents.state import AgentState
 # 复用「已测能力」的 @tool 薄封装（强制检索之外，供 ReAct 多跳调用）——也使 tools.py 不成为死代码
-from src.agents.tools import search_knowledge_graph, semantic_search, get_medication_info
+from src.agents.tools import (
+    search_knowledge_graph,
+    semantic_search,
+    get_medication_info,
+    natural_language_graph_query,  # Text2Cypher，按 settings.text2cypher_enabled 条件启用
+)
 
 logger = setup_logger(__name__, "agents.log")
 
@@ -68,9 +81,9 @@ _GROUNDED_PROMPT = """请**仅依据**下面的【知识库检索内容】回答
 # ReAct 多跳层：强制检索内容作为主要依据已给出，工具仅用于多跳补充
 _REACT_GROUNDED_SYSTEM = """你是医疗问诊系统的"医学知识"专家。系统已**强制检索知识库**，得到如下内容，这是你作答的主要依据：
 {contexts}
-
+{entity_hints}
 工作准则：
-1. 优先依据上面的检索内容作答；若问题需要多跳补充（如"某病的用药 → 该药的副作用/相互作用"），可调用工具 search_knowledge_graph / semantic_search / get_medication_info 进一步取证。
+1. 优先依据上面的检索内容作答；若问题需要多跳补充（如"某病的用药 → 该药的副作用/相互作用"），可调用工具 search_knowledge_graph / semantic_search / get_medication_info 进一步取证；需要灵活的多跳/聚合/条件查询时，可调用 natural_language_graph_query（自动生成只读 Cypher 查图谱）。
 2. 绝不编造检索与工具之外的事实；查不到就如实说"知识库暂无该数据"。
 3. 通俗中文，结构清晰，可用列表；涉及治疗/用药时提醒"请遵医嘱、咨询医生"。"""
 
@@ -95,9 +108,12 @@ class MedicalKnowledgeAgent:
         self.llm = get_llm(temperature=0.1)
         self.react_enabled = settings.enable_react_layer
         # ReAct 工具调用层（create_react_agent 已在 langgraph 内，无需新增依赖）
+        react_tools = [search_knowledge_graph, semantic_search, get_medication_info]
+        if settings.text2cypher_enabled:
+            react_tools.append(natural_language_graph_query)  # Text2Cypher（只读五层防护）
         self.agent = create_react_agent(
             get_llm(temperature=0.1),
-            tools=[search_knowledge_graph, semantic_search, get_medication_info],
+            tools=react_tools,
         )
 
     # ---------------- Step 1a: 按实体类型扩展 Neo4j 结构化事实 ----------------
@@ -149,13 +165,19 @@ class MedicalKnowledgeAgent:
         return None
 
     # ---------------- Step 1: 强制混合检索（grounding 底线，必走） ----------------
-    def _retrieve(self, text: str):
+    def _retrieve(self, text: str, retriever=None):
         """确定性强制检索：FAISS 语义召回(+Neo4j 精确) → 按类型扩展 Neo4j 事实。
-        返回 (contexts, used_hits)。绝不抛异常；contexts 为空 == 知识库未覆盖。"""
+        返回 (contexts, used_hits)。绝不抛异常；contexts 为空 == 知识库未覆盖。
+
+        Args:
+            text: 检索文本
+            retriever: 可复用的 VectorRetriever 实例（Step 0 实体链接已创建则传入，避免重复加载索引）
+        """
         hits = []
         try:
             from src.vector_store.search import VectorRetriever
-            hits = VectorRetriever().search(text, top_k=5) or []
+            vr = retriever or VectorRetriever()
+            hits = vr.search(text, top_k=5) or []
         except Exception as e:
             logger.warning(f"[MedicalKnowledge] vector retrieval failed: {e}")
 
@@ -208,9 +230,18 @@ class MedicalKnowledgeAgent:
         return self.llm.invoke([SystemMessage(content=_GROUNDED_SYSTEM),
                                 HumanMessage(content=prompt)]).content
 
-    def _react_answer(self, user_text: str, contexts: list):
-        """在强制检索内容之上跑 ReAct 多跳；返回 (answer, 工具新增上下文, 工具调用名单)。"""
-        sys = _REACT_GROUNDED_SYSTEM.format(contexts="\n".join(f"- {c}" for c in contexts))
+    def _react_answer(self, user_text: str, contexts: list, entity_hints: str = ""):
+        """在强制检索内容之上跑 ReAct 多跳；返回 (answer, 工具新增上下文, 工具调用名单)。
+
+        Args:
+            entity_hints: Step 0 实体链接结果拼成的提示文本（注入系统消息，供
+                          Text2Cypher 等工具做精确查询条件）；无链接时传空串。
+        """
+        hints_block = f"\n{entity_hints}\n" if entity_hints else ""
+        sys = _REACT_GROUNDED_SYSTEM.format(
+            contexts="\n".join(f"- {c}" for c in contexts),
+            entity_hints=hints_block,
+        )
         res = self.agent.invoke({"messages": [SystemMessage(content=sys), HumanMessage(content=user_text)]})
         msgs = res["messages"]
         tool_ctxs = [m.content for m in msgs if isinstance(m, ToolMessage) and m.content]
@@ -231,15 +262,57 @@ class MedicalKnowledgeAgent:
         user_text = (f"【对话历史】\n{format_history(history)}\n\n【本轮问题】\n{query}") if history else query
 
         # Step 1：强制检索（grounding 底线，必走）
-        contexts, used = self._retrieve(user_text)
+        retriever = None
+        try:
+            from src.vector_store.search import VectorRetriever
+            retriever = VectorRetriever()
+        except Exception as e:
+            logger.warning(f"[MedicalKnowledge] retriever init failed: {e}")
+        contexts, used = self._retrieve(user_text, retriever=retriever)
         logger.info(f"[MedicalKnowledge] forced retrieval: entities={[h.get('name') for h in used]} ctx={len(contexts)}")
+
+        # Step 2：显式实体链接（高精度：用户表述/检索命中 → 图谱规范实体锚点）
+        # terms = 本轮症状 + 检索命中实体名 + 问题本身。
+        # 注意：仅用"整句问题"做链接几乎必然低于 0.85 阈值（句子嵌入 vs 实体名嵌入），
+        # 必须并入检索命中的实体名才能得到可用的锚点集——这些锚点既是回答的 grounding 来源，
+        # 也作为实体提示注入 ReAct 提示词，供 Text2Cypher 等工具做精确查询条件。
+        linked, hints_text = [], ""
+        if retriever is not None:
+            try:
+                terms = (
+                    list(state.get("symptoms", []))
+                    + [h.get("name", "") for h in used if h.get("name")]
+                    + [query]
+                )
+                linked = retriever.link_entities(terms)
+                # 同一规范实体只保留相似度最高的一条锚点
+                # （否则近义实体互相交叉链接，如 高血压/血压高/血压升高 两两互链，锚点会刷屏）
+                best: dict = {}
+                for lk in linked:
+                    key = lk["matched_entity"]
+                    if key not in best or lk["similarity"] > best[key]["similarity"]:
+                        best[key] = lk
+                linked = sorted(best.values(), key=lambda x: x["similarity"], reverse=True)
+                if linked:
+                    hints_text = (
+                        "【已链接实体（高置信链接，建议用下列规范名做精确查询条件）】\n"
+                        + "；".join(
+                            f"{lk['input_entity']}→{lk['matched_entity']}({lk['type']},{lk['similarity']:.2f})"
+                            for lk in linked
+                        )
+                    )
+            except Exception as e:
+                logger.warning(f"[MedicalKnowledge] entity linking failed: {e}")
+        logger.info(f"[MedicalKnowledge] entity linking: {[lk['matched_entity'] for lk in linked]}")
 
         # Step 2/3：生成（grounded+ReAct / 纯 grounded / 分风险兜底）
         tool_calls, mode = [], ""
         try:
             if contexts:
                 if self.react_enabled:
-                    answer, tool_ctxs, tool_calls = self._react_answer(user_text, contexts)
+                    answer, tool_ctxs, tool_calls = self._react_answer(
+                        user_text, contexts, entity_hints=hints_text
+                    )
                     contexts = contexts + tool_ctxs          # 工具多跳结果并入 grounding（供 RAGAS）
                     mode = "grounded+react"
                 else:
@@ -260,8 +333,10 @@ class MedicalKnowledgeAgent:
             "knowledge_answer": answer,
             "retrieved_entities": used,                       # list[dict]，供观测
             "retrieved_contexts": contexts,                   # list[str]，供 RAGAS faithfulness/context
+            "linked_entities": linked,                        # list[dict]，实体链接结果（API/前端展示）
             "messages": [f"[MedicalKnowledge] mode={mode} entities={[h.get('name') for h in used]} "
-                         f"ctx={len(contexts)} tools={tool_calls}"],
+                         f"ctx={len(contexts)} tools={tool_calls} "
+                         f"linked={[lk['matched_entity'] for lk in linked]}"],
         }
 
 

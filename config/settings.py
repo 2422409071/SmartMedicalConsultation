@@ -9,16 +9,22 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# .env 锚定在项目根目录查找，不依赖运行时工作目录
+# （从 scripts/、IDE 或其他 CWD 启动时都能读到同一份配置）
+_PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
 
 class Settings(BaseSettings):
     """
     Application settings loaded from environment variables and .env file.
 
     All settings can be overridden via environment variables or .env file.
+    优先级：系统环境变量 > .env 文件 > 字段默认值。
+    生产部署建议用环境变量/云密钥服务注入，不在服务器上放置 .env 文件。
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_PROJECT_ROOT / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -54,8 +60,8 @@ class Settings(BaseSettings):
 
     # ===== Embedding Model Configuration =====
     embedding_model_path: str = Field(
-        default="D:/models/bge-m3",
-        description="Local path to BGE-M3 embedding model"
+        default="models/bge-m3",
+        description="Local path to BGE-M3 embedding model (relative to project root or absolute)"
     )
 
     # ===== Logging Configuration =====
@@ -77,16 +83,34 @@ class Settings(BaseSettings):
         default=8000,
         description="FastAPI server port"
     )
-    frontend_port: int = Field(
-        default=8501,
-        description="Streamlit frontend port"
-    )
 
     # ===== Agent Configuration =====
     enable_react_layer: bool = Field(
         default=True,
         description="医学知识分支是否在『强制检索』之上再启用可选 ReAct 多跳层（tool-calling）。"
                     "强制检索是 grounding 底线、必走；ReAct 仅作多跳补充与工具调用演示。关闭则纯强制检索，更快更省。"
+    )
+
+    # ===== Entity Linking Configuration =====
+    entity_link_threshold: float = Field(
+        default=0.85,
+        description="实体链接相似度阈值（归一化余弦）。仅 ≥ 阈值 的图谱实体视为成功链接，"
+                    "过高漏链、过低误链，可按 evals 结果调优。"
+    )
+    entity_link_top_k: int = Field(
+        default=3,
+        description="实体链接时每个输入词在 FAISS 中考察的候选数"
+    )
+
+    # ===== Text2Cypher Configuration =====
+    text2cypher_enabled: bool = Field(
+        default=True,
+        description="是否为 ReAct 层提供 natural_language_graph_query 工具（LLM 生成只读 Cypher 查图谱）。"
+                    "需同时开启 enable_react_layer 才生效。"
+    )
+    text2cypher_max_records: int = Field(
+        default=50,
+        description="Text2Cypher 单次查询返回的最大记录数（驱动层截断，防全表扫描）"
     )
 
 

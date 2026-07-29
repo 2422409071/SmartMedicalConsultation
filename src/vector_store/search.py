@@ -232,6 +232,93 @@ class VectorRetriever:
         results = self.search(query, top_k * 2, use_graph=False)
         return [r for r in results if r["type"] in ("Medication", "Drug")]
 
+    # ============================================================
+    # Entity Linking
+    # ============================================================
+
+    @staticmethod
+    def _distance_to_similarity(distances: np.ndarray, metric_type: int) -> np.ndarray:
+        """把 FAISS 返回的距离换算为"越大越相似"的相似度分数。
+
+        - METRIC_INNER_PRODUCT（本项目索引类型，向量已归一化）：内积≈cosine，原值返回
+        - METRIC_L2（向量已归一化时）：cos = 1 - L2²/2
+        - 其他度量：退化为 -dist，保持"越大越相似"语义
+        """
+        if metric_type == faiss.METRIC_INNER_PRODUCT:
+            return distances
+        if metric_type == faiss.METRIC_L2:
+            return 1.0 - distances / 2.0
+        return -distances
+
+    def link_entities(
+        self,
+        terms: list[str],
+        top_k: Optional[int] = None,
+        threshold: Optional[float] = None,
+    ) -> list[dict]:
+        """
+        Entity Linking: 把用户侧词语（口语化症状/疾病名等）高精度地
+        链接到知识图谱中的规范实体。
+
+        与 search() 的定位区别：
+        - search() 面向"召回"（阈值 0.5），结果用于构建检索上下文
+        - link_entities() 面向"精确"（阈值默认 0.85），只输出高置信链接，
+          用于 state 记录、Text2Cypher 实体提示（entity hints）与前端展示
+
+        Args:
+            terms: 输入词列表（如 ["头疼", "高血压"]）
+            top_k: 每个词考察的候选数（默认 settings.entity_link_top_k）
+            threshold: 相似度阈值（默认 settings.entity_link_threshold）
+
+        Returns:
+            链接结果 dict 列表：
+            [{"input_entity", "matched_entity", "type", "similarity"}]
+        """
+        top_k = top_k if top_k is not None else settings.entity_link_top_k
+        threshold = threshold if threshold is not None else settings.entity_link_threshold
+
+        terms = [str(t).strip() for t in (terms or []) if t and str(t).strip()]
+        if not terms or self.index is None or self.index.ntotal == 0:
+            return []
+
+        try:
+            model = self._get_embedding_model()
+            vectors = model.encode(terms, normalize_embeddings=True).astype("float32")
+            distances, indices = self.index.search(vectors, top_k)
+
+            metric_type = getattr(self.index, "metric_type", faiss.METRIC_INNER_PRODUCT)
+            sims = self._distance_to_similarity(np.asarray(distances), metric_type)
+
+            linked = []
+            seen = set()
+            for term, idx_row, sim_row in zip(terms, indices, sims):
+                for idx, sim in zip(idx_row, sim_row):
+                    if idx < 0 or idx >= len(self.entities):
+                        continue
+                    if float(sim) < threshold:
+                        continue
+                    entity = self.entities[idx]
+                    name = entity.get("name", "")
+                    if not name or (term, name) in seen:
+                        continue
+                    seen.add((term, name))
+                    linked.append({
+                        "input_entity": term,
+                        "matched_entity": name,
+                        "type": entity.get("type", ""),
+                        "similarity": round(float(sim), 4),
+                    })
+
+            if linked:
+                logger.info(
+                    f"[LINK] {len(terms)} terms -> {len(linked)} links "
+                    f"(threshold={threshold}): {[lk['matched_entity'] for lk in linked]}"
+                )
+            return linked
+        except Exception as e:
+            logger.warning(f"[LINK] entity linking failed: {e}")
+            return []
+
 
 # ============================================================
 # Main: Self-test
@@ -270,6 +357,19 @@ if __name__ == "__main__":
                 print(f"  {i}. [{r['type']}] {r['name']} (score: {r['score']:.4f}, source: {r['source']})")
         else:
             print("  No results found")
+
+    # Entity linking test
+    print("\n" + "=" * 60)
+    print("ENTITY LINKING TEST")
+    print("=" * 60)
+    link_terms = ["头疼", "高血压", "糖尿"]
+    links = retriever.link_entities(link_terms)
+    if links:
+        for lk in links:
+            print(f"  {lk['input_entity']} -> {lk['matched_entity']} "
+                  f"({lk['type']}, sim={lk['similarity']:.4f})")
+    else:
+        print("  No links above threshold")
 
     print("\n" + "=" * 60)
     print("[SUCCESS] Vector retriever tests completed!")

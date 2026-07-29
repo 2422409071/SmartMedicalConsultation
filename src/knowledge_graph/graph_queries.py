@@ -3,6 +3,7 @@ Knowledge Graph Queries
 Provides query functions for Agents to access the knowledge graph.
 """
 
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -49,6 +50,87 @@ class GraphQueries:
         if self._driver:
             self._driver.close()
             self._driver = None
+
+    # ============================================================
+    # Generic Cypher Execution (for Text2Cypher)
+    # ============================================================
+
+    # L2 安全层：写关键字拒绝正则（与只读事务构成双保险）
+    _WRITE_KEYWORDS = re.compile(
+        r"\b(CREATE|MERGE|DELETE|DETACH|SET|REMOVE|DROP|LOAD|FOREACH)\b|CALL\s+db",
+        re.IGNORECASE,
+    )
+
+    def check_cypher_syntax(self, cypher: str, params: Optional[dict] = None) -> tuple[bool, str]:
+        """
+        Validate Cypher syntax with EXPLAIN (plans but does not execute).
+
+        Args:
+            cypher: Cypher query string
+            params: Optional query parameters
+
+        Returns:
+            (is_valid, message) tuple
+        """
+        try:
+            from neo4j.exceptions import CypherSyntaxError
+        except ImportError:  # pragma: no cover
+            return False, "neo4j 驱动未安装"
+        try:
+            driver = self.get_driver()
+            with driver.session() as session:
+                session.run(f"EXPLAIN {cypher}", params or {})
+            return True, "语法正确"
+        except CypherSyntaxError as e:
+            return False, f"语法错误: {e}"
+        except Exception as e:
+            return False, f"校验失败: {e}"
+
+    def run_readonly_cypher(self, cypher: str, params: Optional[dict] = None,
+                            max_records: int = 50) -> list[dict]:
+        """
+        Execute an LLM-generated Cypher in a READ-ONLY transaction.
+
+        供 Text2Cypher 引擎调用。三层安全防线：
+        1. L2 写关键字拒绝：发送前正则拦截 CREATE/MERGE/DELETE/SET/... 与 CALL db* 过程调用
+        2. L1 只读事务：session(default_access_mode=READ_ACCESS)，驱动层保证即使绕过
+           关键字检查也无法写入（数据库直接拒绝）
+        3. L5 记录数截断：枚举到 max_records 立即停止，防全表扫描打爆上下文
+
+        Args:
+            cypher: Cypher query string (must be read-only)
+            params: Optional query parameters
+            max_records: Maximum number of records to return
+
+        Returns:
+            List of record dicts (each record via record.data())
+
+        Raises:
+            ValueError: If the query contains write keywords (L2 rejection)
+            Exception: Neo4j connection/execution errors propagate to caller
+                       (Text2CypherEngine 负责兜底，绝不向上打断 ReAct 循环)
+        """
+        # L2: 写关键字拒绝
+        if self._WRITE_KEYWORDS.search(cypher):
+            logger.warning(f"[run_readonly_cypher] REJECTED write attempt: {cypher[:200]}")
+            raise ValueError("仅允许执行只读 Cypher 查询（检测到写操作关键字）")
+
+        from neo4j import READ_ACCESS
+
+        driver = self.get_driver()
+        records: list[dict] = []
+
+        with driver.session(default_access_mode=READ_ACCESS) as session:
+            def _work(tx):
+                result = tx.run(cypher, params or {})
+                for i, record in enumerate(result):
+                    if i >= max_records:  # L5: 记录数截断
+                        break
+                    records.append(record.data())
+
+            session.execute_read(_work)
+
+        return records
 
     # ============================================================
     # Disease Queries
@@ -113,7 +195,7 @@ class GraphQueries:
         driver = self.get_driver()
         with driver.session() as session:
             result = session.run("""
-                MATCH (d:Disease {name: $name})-[r:TREATED_BY_DRUG]->(m:Medication)
+                MATCH (d:Disease {name: $name})-[r:TREATED_BY_MEDICATION]->(m:Medication)
                 RETURN m.name AS name,
                        m.category AS category,
                        r.evidence_level AS evidence_level
@@ -141,7 +223,7 @@ class GraphQueries:
         driver = self.get_driver()
         with driver.session() as session:
             result = session.run("""
-                MATCH (d:Disease {name: $name})-[r:BELONG_TO_DEPARTMENT]->(dep:Department)
+                MATCH (d:Disease {name: $name})-[r:BELONGS_TO_DEPARTMENT]->(dep:Department)
                 RETURN dep.name AS department
                 ORDER BY r.priority
             """, name=disease_name)
@@ -332,9 +414,9 @@ class GraphQueries:
         """
         driver = self.get_driver()
         with driver.session() as session:
-            # Use BELONG_TO_DEPARTMENT relation (Disease -> Department)
+            # Use BELONGS_TO_DEPARTMENT relation (Disease -> Department)
             result = session.run("""
-                MATCH (d:Disease)-[:BELONG_TO_DEPARTMENT]->(dep:Department {name: $name})
+                MATCH (d:Disease)-[:BELONGS_TO_DEPARTMENT]->(dep:Department {name: $name})
                 RETURN d.name AS disease
                 ORDER BY d.name
             """, name=department_name)

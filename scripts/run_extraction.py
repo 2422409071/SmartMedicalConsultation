@@ -29,6 +29,12 @@ from tqdm import tqdm
 from config.paths import DATA_PROCESSED_DIR, DATA_KG_DIR, LOGS_DIR
 from src.common.logger import setup_logger
 from src.extraction.disease_extractor import DiseaseExtractor
+# R1 名字唯一主人：类型名一律取自契约枚举，禁止字符串字面量
+from src.knowledge_graph.schema import NodeType, RelationType
+
+# 辅助抽取类型（不在核心 NodeType 契约内，见 schema.py 备注与 check_contracts 白名单）
+AUX_TYPE_TREATMENT = "Treatment"
+AUX_TYPE_CONCEPT = "MedicalConcept"
 
 logger = setup_logger(__name__, "extraction.log")
 
@@ -114,61 +120,61 @@ class CheckpointManager:
 # ============================================================
 
 def serialize_entities(result) -> list[dict]:
-    """Convert DiseaseExtractionResult entities to serializable dicts"""
+    """Convert DiseaseExtractionResult entities to serializable dicts（类型名取自 NodeType 枚举，R1）"""
     entities = []
 
     # Disease entity
     entities.append({
-        "type": "Disease",
+        "type": NodeType.DISEASE.value,
         "data": result.disease.model_dump()
     })
 
     # Symptoms
     for s in result.symptoms:
         entities.append({
-            "type": "Symptom",
+            "type": NodeType.SYMPTOM.value,
             "data": s.model_dump()
         })
 
     # Medications
     for m in result.medications:
         entities.append({
-            "type": "Medication",
+            "type": NodeType.MEDICATION.value,
             "data": m.model_dump()
         })
 
     # Departments
     for d in result.departments:
         entities.append({
-            "type": "Department",
+            "type": NodeType.DEPARTMENT.value,
             "data": d.model_dump()
         })
 
     # Examinations
     for e in result.examinations:
         entities.append({
-            "type": "Examination",
+            "type": NodeType.EXAMINATION.value,
             "data": e.model_dump()
         })
 
-    # Treatments
+    # Treatments（辅助抽取类型，不在核心 NodeType 契约内）
     for t in result.treatments:
         entities.append({
-            "type": "Treatment",
+            "type": AUX_TYPE_TREATMENT,
             "data": t.model_dump()
         })
 
     # Body Parts
     for bp in result.body_parts:
         entities.append({
-            "type": "BodyPart",
+            "type": NodeType.BODY_PART.value,
             "data": bp.model_dump()
         })
 
-    # Concepts
+    # Concepts（辅助抽取类型，不在核心 NodeType 契约内）
     for c in result.concepts:
         entities.append({
-            "type": "MedicalConcept",
+            "type": AUX_TYPE_CONCEPT,
             "data": c.model_dump()
         })
 
@@ -176,41 +182,41 @@ def serialize_entities(result) -> list[dict]:
 
 
 def serialize_relations(result) -> list[dict]:
-    """Convert DiseaseExtractionResult relations to serializable dicts"""
+    """Convert DiseaseExtractionResult relations to serializable dicts（类型名取自 RelationType 枚举，R1）"""
     relations = []
 
     # HAS_SYMPTOM
     for r in result.has_symptom_relations:
         relations.append({
-            "type": "HAS_SYMPTOM",
+            "type": RelationType.HAS_SYMPTOM.value,
             "data": r.model_dump()
         })
 
-    # TREATED_BY_DRUG
+    # TREATED_BY_MEDICATION
     for r in result.treated_by_relations:
         relations.append({
-            "type": "TREATED_BY_DRUG",
+            "type": RelationType.TREATED_BY_MEDICATION.value,
             "data": r.model_dump()
         })
 
-    # BELONG_TO_DEPARTMENT
+    # BELONGS_TO_DEPARTMENT
     for r in result.department_relations:
         relations.append({
-            "type": "BELONG_TO_DEPARTMENT",
+            "type": RelationType.BELONGS_TO_DEPARTMENT.value,
             "data": r.model_dump()
         })
 
     # NEEDS_EXAMINATION
     for r in result.examination_relations:
         relations.append({
-            "type": "NEEDS_EXAMINATION",
+            "type": RelationType.NEEDS_EXAMINATION.value,
             "data": r.model_dump()
         })
 
     # AFFECTS_BODY_PART
     for r in result.body_part_relations:
         relations.append({
-            "type": "AFFECTS_BODY_PART",
+            "type": RelationType.AFFECTS_BODY_PART.value,
             "data": r.model_dump()
         })
 

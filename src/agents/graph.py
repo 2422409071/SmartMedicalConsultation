@@ -171,6 +171,48 @@ def run(query: str, history: list | None = None) -> AgentState:
 
 
 # ============================================================
+# Streaming Run (for SSE endpoint)
+# ============================================================
+
+# 节点名 → 中文标签（前端进度展示用）
+NODE_LABELS_ZH = {
+    "intent_classifier": "意图识别",
+    "symptom_detector": "症状检测",
+    "department_recommender": "科室推荐",
+    "medication_advisor": "用药建议",
+    "medical_knowledge": "医学知识检索",
+    "pre_visit_advisor": "就医指导",
+    "safety_checker": "安全检查",
+    "answer_fusion": "答案生成",
+    "general_chat": "通用对话",
+}
+
+
+def run_stream(query: str, history: list | None = None):
+    """Streaming 运行 Agent 系统，供 SSE 端点消费。
+
+    使用 LangGraph 双模式 stream：
+    - "updates"：每个节点完成后给出 {node_name: delta} → yield ("progress", node_name, delta)
+    - "values" ：每步之后给出完整 state 快照 → yield ("values", snapshot)，最后一个即终态
+
+    注意：这是**同步生成器**（app.stream 为同步）。SSE 端点用
+    asyncio.to_thread(lambda: next(gen, sentinel)) 逐个取值——哨兵模式保证
+    StopIteration 不穿越线程边界进入 async 生成器（PEP 479 会将其转为 RuntimeError）。
+    """
+    logger.info(f"[Graph] Starting streaming consultation: {query[:50]}...")
+    initial_state = create_initial_state(query, history=history)
+    for mode, chunk in app.stream(initial_state, stream_mode=["updates", "values"]):
+        if mode == "updates":
+            # chunk = {node_name: state_delta}；过滤 __start__（初始状态写入，非 Agent 节点）
+            for node_name, delta in chunk.items():
+                if node_name == "__start__":
+                    continue
+                yield ("progress", node_name, delta if isinstance(delta, dict) else {})
+        else:  # mode == "values"
+            yield ("values", chunk)
+
+
+# ============================================================
 # Visualization
 # ============================================================
 

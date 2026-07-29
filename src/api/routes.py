@@ -4,6 +4,7 @@ FastAPI router with consultation, health, and stats endpoints.
 Includes timeout handling, concurrency control, and request logging.
 """
 
+import json
 import sys
 import time
 import asyncio
@@ -14,7 +15,8 @@ _project_root = Path(__file__).parent.parent.parent.resolve()
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from src.common.logger import setup_logger
 from src.common.memory import memory
@@ -126,6 +128,7 @@ async def consult(req: ConsultationRequest):
                     medications=result.get("medications", []),
                     disclaimers=disclaimers,
                     warnings=result.get("warnings", []),
+                    linked_entities=result.get("linked_entities", []),
                     duration_ms=duration_ms
                 )
 
@@ -194,6 +197,166 @@ async def consult(req: ConsultationRequest):
             disclaimers=["🔴 重要声明：本建议仅供参考，不能替代专业医疗诊断。"],
             duration_ms=duration_ms
         )
+
+
+# ============================================================
+# POST /api/consult/stream - Streaming Consultation Endpoint (SSE)
+# ============================================================
+
+# 流结束哨兵：next(gen, _STREAM_DONE) 避免 StopIteration 穿越线程边界
+# 进入 async 生成器（PEP 479 会把 async 生成器内的 StopIteration 转为 RuntimeError）
+_STREAM_DONE = object()
+
+
+def _sse_format(data: str, event: str | None = None) -> str:
+    """把一条消息格式化为 SSE 帧：event:/data: 行 + 空行结尾（WHATWG SSE 规范）。"""
+    lines = []
+    if event is not None:
+        lines.append(f"event: {event}")
+    for line in data.splitlines() or [""]:
+        lines.append(f"data: {line}")
+    return "\n".join(lines) + "\n\n"
+
+
+def _facts_from_delta(delta: dict) -> dict:
+    """从节点 state 增量中提取可展示给用户的部分事实（progress 帧用）。"""
+    facts = {}
+    if delta.get("intent"):
+        facts["intent"] = delta["intent"]
+    if delta.get("symptoms"):
+        facts["symptoms"] = delta["symptoms"]
+    if delta.get("departments"):
+        facts["departments"] = delta["departments"]
+    if delta.get("linked_entities"):
+        facts["linked_entities"] = [lk.get("matched_entity") for lk in delta["linked_entities"]]
+    if delta.get("needs_clarification"):
+        facts["needs_clarification"] = True
+    return facts
+
+
+def _build_response_from_state(state: dict, start_time: float) -> ConsultationResponse:
+    """从终态构建标准响应（/consult 与 /consult/stream 共用字段口径）。"""
+    return ConsultationResponse(
+        answer=state.get("final_answer", ""),
+        intent=state.get("intent", ""),
+        symptoms=state.get("symptoms", []),
+        departments=state.get("departments", []),
+        medications=state.get("medications", []),
+        disclaimers=state.get("disclaimers", []),
+        warnings=state.get("warnings", []),
+        linked_entities=state.get("linked_entities", []),
+        duration_ms=int((time.time() - start_time) * 1000),
+    )
+
+
+@router.post(
+    "/consult/stream",
+    tags=["问诊"],
+    summary="流式问诊接口（SSE）",
+    description="与 /consult 相同的结果，但以 Server-Sent Events 流式推送："
+                "event: progress（每个 Agent 节点完成的进度）→ event: answer（完整响应 JSON）"
+                "→ event: done（[DONE] 结束标记）。客户端断开时提前终止。"
+)
+async def consult_stream(req: ConsultationRequest, request: Request):
+    """SSE 流式问诊。
+
+    桥接设计：LangGraph app.stream 是同步生成器，本端点是 async def。
+    用 asyncio.to_thread(lambda: next(gen, _STREAM_DONE)) 逐个取值——
+    每个节点一次线程调度，既能在每步之间检查客户端断开，又不长时间占用线程池。
+    """
+    from src.api.main import app_state
+
+    if not app_state.agent_system_ready:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent system not ready. Please try again later."
+        )
+
+    start_time = time.time()
+    app_state.total_requests += 1
+    logger.info(f"[API] Streaming consultation request: '{req.query[:50]}...' (session: {req.session_id})")
+
+    async def event_generator():
+        from src.agents.graph import run_stream, NODE_LABELS_ZH
+
+        final_state = None
+        try:
+            async with app_state.request_semaphore:
+                history = memory.get_history(req.session_id, n=10)
+                gen = run_stream(req.query, history)
+                while True:
+                    # 先查客户端断开，再取下一块
+                    if await request.is_disconnected():
+                        logger.info("[API] Stream client disconnected, stopping early")
+                        return
+                    try:
+                        chunk = await asyncio.wait_for(
+                            asyncio.to_thread(lambda: next(gen, _STREAM_DONE)),
+                            timeout=REQUEST_TIMEOUT,
+                        )
+                    except asyncio.TimeoutError:
+                        app_state.total_errors += 1
+                        logger.error(f"[API] Stream timeout after {REQUEST_TIMEOUT}s")
+                        yield _sse_format(
+                            json.dumps({"message": f"处理超时（{REQUEST_TIMEOUT}s），请简化问题后重试"},
+                                       ensure_ascii=False),
+                            event="error",
+                        )
+                        return
+                    if chunk is _STREAM_DONE:
+                        break
+
+                    kind = chunk[0]
+                    if kind == "progress":
+                        _, node_name, delta = chunk
+                        payload = {
+                            "node": node_name,
+                            "label": NODE_LABELS_ZH.get(node_name, node_name),
+                            "facts": _facts_from_delta(delta),
+                        }
+                        yield _sse_format(json.dumps(payload, ensure_ascii=False), event="progress")
+                    else:  # kind == "values"：完整快照，最后一个即终态
+                        final_state = chunk[1]
+        except Exception as e:
+            app_state.total_errors += 1
+            logger.error(f"[API] Streaming consultation failed: {e}")
+            yield _sse_format(
+                json.dumps({"message": f"系统错误：{e}"}, ensure_ascii=False),
+                event="error",
+            )
+            return
+
+        # 终答帧：与 /consult 同口径的完整响应
+        if final_state is not None:
+            response = _build_response_from_state(final_state, start_time)
+            log_request(
+                query=req.query,
+                intent=response.intent,
+                duration_ms=response.duration_ms,
+                has_disclaimer=len(response.disclaimers) > 0,
+                success=True,
+            )
+            # 写入会话记忆（与 /consult 一致），供下一轮多轮上下文
+            memory.add_turn(req.session_id, "user", req.query)
+            memory.add_turn(
+                req.session_id, "assistant", response.answer,
+                intent=response.intent,
+                symptoms=response.symptoms,
+                departments=response.departments,
+            )
+            yield _sse_format(response.model_dump_json(), event="answer")
+
+        yield _sse_format("[DONE]", event="done")
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 防反向代理（Nginx 等）缓冲 SSE
+        },
+    )
 
 
 # ============================================================

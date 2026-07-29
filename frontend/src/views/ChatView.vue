@@ -10,7 +10,8 @@
 import { ref, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import ChatMessage from '@/components/ChatMessage.vue'
-import { consult, health } from '@/api/index.js'
+import DisclaimerBanner from '@/components/DisclaimerBanner.vue'
+import { consult, consultStream, health } from '@/api/index.js'
 
 // ---------- 状态 ----------
 const messages = ref([])
@@ -73,16 +74,16 @@ function scrollBottom() {
   })
 }
 
-// ---------- 发送 ----------
+// ---------- 发送（默认走 SSE 流式，失败自动降级为非流式 /consult） ----------
 async function send(text) {
   const query = (text ?? input.value).trim()
   if (!query || loading.value) return
 
   // 用户消息
   messages.value.push({ role: 'user', content: query })
-  // 占位 AI 消息（思考中）
+  // 占位 AI 消息（思考中 + 流式进度）
   // 注意：必须从数组取回响应式代理；若直接改动 push 前的原始对象引用，Vue 不会触发更新
-  messages.value.push({ role: 'assistant', pending: true })
+  messages.value.push({ role: 'assistant', pending: true, progressSteps: [] })
   const aiMsg = messages.value[messages.value.length - 1]
   input.value = ''
   loading.value = true
@@ -90,25 +91,58 @@ async function send(text) {
   scrollBottom()
 
   try {
-    const { data } = await consult(query, sessionId.value)
-    Object.assign(aiMsg, {
-      pending: false,
-      content: data.answer || '',
-      intent: data.intent || '',
-      symptoms: data.symptoms || [],
-      departments: data.departments || [],
-      medications: data.medications || [],
-      disclaimers: data.disclaimers || [],
-      warnings: data.warnings || [],
-      duration_ms: data.duration_ms || 0
+    await consultStream(query, sessionId.value, {
+      onProgress: (p) => {
+        // 每个 Agent 节点完成 → 追加进度标签（整体替换数组触发响应式更新）
+        aiMsg.progressSteps = [...(aiMsg.progressSteps || []), p]
+        scrollBottom()
+      },
+      onAnswer: (data) => applyAnswer(aiMsg, data),
+      onError: (e) => {
+        aiMsg.pending = false
+        aiMsg.error = e?.message || '流式响应出错'
+        ElMessage.error(aiMsg.error)
+      }
     })
+    // 流正常结束但一帧 answer 都没收到 → 走非流式兜底
+    if (aiMsg.pending) await fallbackConsult(query, aiMsg)
   } catch (err) {
-    aiMsg.pending = false
-    aiMsg.error = friendlyError(err)
-    ElMessage.error(aiMsg.error)
+    // SSE 连接本身失败（网络异常 / 503 / 旧后端无此端点）→ 自动降级
+    if (aiMsg.pending) {
+      aiMsg.progressSteps = []
+      await fallbackConsult(query, aiMsg, err)
+    }
   } finally {
     loading.value = false
     scrollBottom()
+  }
+}
+
+// 把终答帧/非流式响应写入消息（两个路径共用字段口径）
+function applyAnswer(aiMsg, data) {
+  Object.assign(aiMsg, {
+    pending: false,
+    content: data.answer || '',
+    intent: data.intent || '',
+    symptoms: data.symptoms || [],
+    departments: data.departments || [],
+    medications: data.medications || [],
+    disclaimers: data.disclaimers || [],
+    warnings: data.warnings || [],
+    linked_entities: data.linked_entities || [],
+    duration_ms: data.duration_ms || 0
+  })
+}
+
+// 非流式降级路径（保留原有 /consult）
+async function fallbackConsult(query, aiMsg, prevErr) {
+  try {
+    const { data } = await consult(query, sessionId.value)
+    applyAnswer(aiMsg, data)
+  } catch (err) {
+    aiMsg.pending = false
+    aiMsg.error = friendlyError(prevErr || err)
+    ElMessage.error(aiMsg.error)
   }
 }
 
@@ -203,13 +237,7 @@ onMounted(loadHealth)
           <span class="top-title">智能医疗问诊助手</span>
         </div>
 
-        <el-alert
-          class="disclaimer"
-          type="warning"
-          :closable="false"
-          show-icon
-          title="本系统仅供健康咨询与就医指导，不能替代专业医疗诊断。身体不适请及时就医，切勿自行用药。"
-        />
+        <DisclaimerBanner />
 
         <div class="chat-area" ref="chatArea">
           <!-- 空状态 -->
@@ -360,8 +388,6 @@ onMounted(loadHealth)
 .menu-btn { border: 1px solid rgba(15,118,110,.2); background: #fff; border-radius: 10px;
   width: 38px; height: 38px; font-size: 18px; cursor: pointer; color: var(--teal-700); }
 .top-title { font-family: var(--font-display); font-weight: 900; font-size: 17px; color: var(--teal-900); }
-
-.disclaimer { border-radius: 12px; }
 
 .chat-area { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 6px 6px 2px; scroll-behavior: smooth; }
 .messages { padding: 6px 4px; }

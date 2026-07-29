@@ -382,7 +382,7 @@ if __name__ == "__main__":
     print(f"[PASS] Medications: {[m.name for m in result.medications]}")
     print(f"[PASS] Departments: {[d.name for d in result.departments]}")
     print(f"[PASS] HAS_SYMPTOM relations: {len(result.has_symptom_relations)}")
-    print(f"[PASS] TREATED_BY relations: {len(result.treated_by_relations)}")
+    print(f"[PASS] TREATED_BY_MEDICATION relations: {len(result.treated_by_relations)}")
 
     print("\n" + "=" * 60)
     print("[SUCCESS] Disease extractor tests passed!")

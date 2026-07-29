@@ -32,17 +32,13 @@ class IntentType:
 
 
 # ============================================================
-# Severity Levels
+# Severity Levels —— 统一定义于 src/knowledge_graph/schema.py（R1），此处转导入
 # ============================================================
 
-class SeverityLevel:
-    """Severity level constants"""
-    LOW = "low"          # 轻微：不影响日常生活
-    MEDIUM = "medium"    # 中等：需要关注
-    HIGH = "high"        # 严重：需要尽快就医
-    EMERGENCY = "emergency"  # 急症：需要立即就医
+from src.knowledge_graph.schema import SeverityLevel  # noqa: E402
 
-    ALL = [LOW, MEDIUM, HIGH, EMERGENCY]
+# 兼容旧的 .ALL 用法（本文件自测与历史引用）
+SEVERITY_ALL = [lvl.value for lvl in SeverityLevel]
 
 
 # ============================================================
@@ -70,6 +66,7 @@ class AgentState(TypedDict, total=False):
         warnings: Emergency warnings (if applicable)
         final_answer: Final composed answer
         retrieved_entities: Entities retrieved from knowledge graph
+        linked_entities: Entity linking results (user terms → canonical graph entities)
         messages: Debug messages for tracing agent execution
     """
 
@@ -117,6 +114,11 @@ class AgentState(TypedDict, total=False):
     # 每个实体: {"name": str, "type": str, "score": float, "source": str}
     retrieved_contexts: Annotated[list, operator.add]  # ReAct 工具返回的检索上下文（供 RAGAS 评估）
 
+    # ===== Linked Entities (Entity Linking) =====
+    linked_entities: Annotated[list[dict], operator.add]  # 实体链接结果（累加）
+    # 每条链接: {"input_entity": str, "matched_entity": str, "type": str, "similarity": float}
+    # 由 medical_knowledge 的 Step0 显式实体链接产生，供 API 响应/前端展示/Text2Cypher 提示
+
     # ===== Debug Messages =====
     messages: Annotated[list[str], operator.add]  # 调试消息（累加）
 
@@ -155,6 +157,7 @@ def create_initial_state(query: str, history: list | None = None) -> AgentState:
         final_answer="",
         retrieved_entities=[],
         retrieved_contexts=[],
+        linked_entities=[],
         messages=[f"[START] User query: {query}"]
     )
 
@@ -239,7 +242,7 @@ if __name__ == "__main__":
 
     # Test 5: Severity levels
     print("\n[TEST 5] Severity levels")
-    for level in SeverityLevel.ALL:
+    for level in SEVERITY_ALL:
         print(f"  - {level}")
 
     print("\n" + "=" * 60)

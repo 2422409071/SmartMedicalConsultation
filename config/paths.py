@@ -35,7 +35,7 @@ AGENTS_DIR = SRC_DIR / "agents"                    # Agent modules
 API_DIR = SRC_DIR / "api"                          # FastAPI modules
 COMMON_DIR = SRC_DIR / "common"                    # Common utilities
 EXTRACTION_DIR = SRC_DIR / "extraction"            # Entity extraction modules
-FRONTEND_DIR = SRC_DIR / "frontend"                # Streamlit frontend
+FRONTEND_DIR = PROJECT_ROOT / "frontend"            # Vue 3 frontend (project root)
 KNOWLEDGE_GRAPH_DIR = SRC_DIR / "knowledge_graph"  # Knowledge graph modules
 
 

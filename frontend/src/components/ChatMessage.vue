@@ -6,7 +6,7 @@
   - 失败：红色错误块 + 重试提示
 -->
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { renderMarkdown } from '@/utils/markdown.js'
 
@@ -15,6 +15,12 @@ const props = defineProps({
 })
 
 const copied = ref(false)
+
+// 流式进度：思考文案跟随最新完成的节点
+const thinkingLabel = computed(() => {
+  const steps = props.msg.progressSteps || []
+  return steps.length ? `正在${steps[steps.length - 1].label}…` : '正在为您分析…'
+})
 
 async function copyAnswer() {
   try {
@@ -50,10 +56,17 @@ const INTENT_LABEL = {
     </div>
 
     <div class="ai-body">
-      <!-- 思考中 -->
-      <div v-if="msg.pending" class="thinking">
-        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-        <span class="thinking-text">正在为您分析…</span>
+      <!-- 思考中（流式：节点进度轨迹 + 跳动圆点） -->
+      <div v-if="msg.pending" class="thinking-wrap">
+        <div class="thinking">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="thinking-text">{{ thinkingLabel }}</span>
+        </div>
+        <div v-if="msg.progressSteps && msg.progressSteps.length" class="progress-trail">
+          <span v-for="(p, i) in msg.progressSteps" :key="i" class="progress-chip">
+            ✓ {{ p.label }}
+          </span>
+        </div>
       </div>
 
       <!-- 失败 -->
@@ -86,10 +99,24 @@ const INTENT_LABEL = {
             v-if="
               (msg.symptoms && msg.symptoms.length) ||
               (msg.departments && msg.departments.length) ||
-              (msg.medications && msg.medications.length)
+              (msg.medications && msg.medications.length) ||
+              (msg.linked_entities && msg.linked_entities.length)
             "
             class="tags"
           >
+            <div v-if="msg.linked_entities && msg.linked_entities.length" class="tag-group">
+              <span class="tag-label">知识定位</span>
+              <el-tag
+                v-for="lk in msg.linked_entities"
+                :key="lk.input_entity + '→' + lk.matched_entity"
+                type="primary"
+                class="pill"
+                size="small"
+                :title="`用户表述「${lk.input_entity}」→ 图谱实体「${lk.matched_entity}」，相似度 ${lk.similarity}`"
+              >
+                {{ lk.matched_entity }}（{{ lk.type }}，{{ Math.round(lk.similarity * 100) }}%）
+              </el-tag>
+            </div>
             <div v-if="msg.symptoms && msg.symptoms.length" class="tag-group">
               <span class="tag-label">症状</span>
               <el-tag v-for="s in msg.symptoms" :key="s" type="info" class="pill" size="small">
@@ -209,6 +236,29 @@ const INTENT_LABEL = {
 }
 
 /* ---------- 思考动画 ---------- */
+.thinking-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 流式进度轨迹：每个完成的 Agent 节点一枚 chip */
+.progress-trail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 2px;
+}
+.progress-chip {
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--teal-700);
+  background: var(--mint);
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  animation: msg-in 0.3s ease both;
+}
+
 .thinking {
   display: inline-flex;
   align-items: center;

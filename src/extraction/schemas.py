@@ -12,38 +12,24 @@ from pydantic import BaseModel, Field
 
 
 # ============================================================
-# Enums
+# Enums —— 统一定义于 src/knowledge_graph/schema.py（R1 名字唯一主人）
+# 本文件仅转导入、不再就地定义。DiseaseRelationType 即原 RelationType
+# （因与图关系契约 RelationType 重名而改名，消除导入歧义）。
 # ============================================================
 
-class SeverityLevel(str, Enum):
-    """Severity level for symptoms and interactions"""
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
+import sys
+from pathlib import Path
 
+_project_root = Path(__file__).parent.parent.parent.resolve()
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 
-class FrequencyLevel(str, Enum):
-    """Frequency level for symptom occurrence"""
-    RARE = "rare"
-    OCCASIONAL = "occasional"
-    COMMON = "common"
-    VERY_COMMON = "very_common"
-
-
-class EvidenceLevel(str, Enum):
-    """Evidence level for treatment recommendations"""
-    A = "A"  # Strong evidence
-    B = "B"  # Moderate evidence
-    C = "C"  # Weak evidence
-    D = "D"  # Expert opinion
-
-
-class RelationType(str, Enum):
-    """Disease relationship types"""
-    COMPLICATION = "complication"       # 并发症
-    COMORBIDITY = "comorbidity"         # 合并症
-    CAUSAL = "causal"                   # 因果关系
-    SIMILAR = "similar"                 # 相似疾病
+from src.knowledge_graph.schema import (
+    SeverityLevel,
+    FrequencyLevel,
+    EvidenceLevel,
+    DiseaseRelationType,
+)
 
 
 # ============================================================
@@ -263,7 +249,7 @@ class MayIndicateRelation(BaseModel):
 class BelongsToDepartmentRelation(BaseModel):
     """
     疾病-科室关系
-    Pattern: (d:Disease)-[:BELONG_TO_DEPARTMENT]->(dep:Department)
+    Pattern: (d:Disease)-[:BELONGS_TO_DEPARTMENT]->(dep:Department)
     """
     disease_name: str = Field(..., description="疾病名称")
     department_name: str = Field(..., description="科室名称")
@@ -276,7 +262,7 @@ class BelongsToDepartmentRelation(BaseModel):
 class TreatedByDrugRelation(BaseModel):
     """
     疾病-药物关系
-    Pattern: (d:Disease)-[:TREATED_BY_DRUG]->(dr:Drug)
+    Pattern: (d:Disease)-[:TREATED_BY_MEDICATION]->(dr:Medication)
     """
     disease_name: str = Field(..., description="疾病名称")
     drug_name: str = Field(..., description="药物名称")
@@ -376,8 +362,8 @@ class DiseaseRelatedRelation(BaseModel):
     """
     disease1_name: str = Field(..., description="疾病1名称")
     disease2_name: str = Field(..., description="疾病2名称")
-    relation_type: RelationType = Field(
-        default=RelationType.COMPLICATION,
+    relation_type: DiseaseRelationType = Field(
+        default=DiseaseRelationType.COMPLICATION,
         description="关系类型：complication（并发症）/comorbidity（合并症）/causal（因果）/similar（相似）"
     )
 
@@ -572,14 +558,14 @@ if __name__ == "__main__":
         evidence_level=EvidenceLevel.A,
         is_first_line=True
     )
-    print(f"  TREATED_BY_DRUG: {rel2.disease_name} -> {rel2.drug_name}")
+    print(f"  TREATED_BY_MEDICATION: {rel2.disease_name} -> {rel2.drug_name}")
 
     rel3 = BelongsToDepartmentRelation(
         disease_name="高血压",
         department_name="心血管内科",
         priority=1
     )
-    print(f"  BELONG_TO_DEPARTMENT: {rel3.disease_name} -> {rel3.department_name}")
+    print(f"  BELONGS_TO_DEPARTMENT: {rel3.disease_name} -> {rel3.department_name}")
 
     # Test comprehensive result
     print("\n[TEST 5] Comprehensive Extraction Result")

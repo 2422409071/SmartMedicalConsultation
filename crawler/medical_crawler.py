@@ -50,54 +50,67 @@ USER_AGENTS = [
 ]
 
 # ===== Predefined Disease List =====
-# Common diseases for medical knowledge graph (haodf.com disease IDs)
-# These are added to ensure we crawl enough data for the knowledge graph
+# Common diseases for medical knowledge graph (haodf.com pinyin slugs).
+# 只允许 ASCII 拼音 slug（带音调/连字符的必然 404——URL 里出现非 ASCII 即非法）。
+# 无效 slug 是可容忍的：仅计为失败请求，不影响整体（有 xywy 备份源兜底）。
 COMMON_DISEASES = [
-    # 心血管疾病
+    # 心血管
     "gaoxueya", "guanxinbing", "xinjiquexue", "xinlvbuqi", "xinzangbing",
     "dongmaizhouyangyinghua", "jingmaiquzhang", "naogengsi", "naochuxue",
-    # 呼吸系统疾病
-    "ganmao", "liugan", "feiyán", "qiguanyán", "xiaochuan", "manxingzusaixingfeibing",
-    "feijiehe", "feiai", "biyan", "yanyan",
-    # 消化系统疾病
-    "weiyán", "weikuiyang", "ganyán", "ganyinghua", "dangnangyan", "yixianyan",
-    "changweiyan", "bianmi", "fuxie", "zhichuang",
-    # 内分泌疾病
+    "feidongmaigaoya", "fengshixingxinzangbing", "xinzangbanmobing", "xinzangzaibo",
+    # 呼吸
+    "ganmao", "liugan", "feiyan", "qiguanyan", "xiaochuan", "manxingzusaixingfeibing",
+    "feijiehe", "feiai", "biyan", "yanyan", "guominxingbiyan",
+    "shuimianhuxizanting", "manxingzhiqiguanyan",
+    # 消化
+    "weiyan", "weikuiyang", "ganyan", "ganyinghua", "dangnangyan", "yixianyan",
+    "bianmi", "fuxie", "zhichuang", "weichangai", "ganai", "ganglie",
+    "xiaohuabuliang", "fushi", "zhifanggan",
+    # 内分泌/代谢
     "tangniaobing", "jiazhuangxiankangjin", "jiazhuangxianjiejie", "gaozhixuezheng",
-    "tongfeng", "guzhisongshu", "feipangzheng",
-    # 神经系统疾病
+    "tongfeng", "guzhisongshu", "feipangzheng", "jiazhuangxianyan", "jiakang", "jiajian",
+    "duonangluanchaozonghezheng",
+    # 神经/精神
     "toutong", "touyun", "shimian", "jiaolvzheng", "yiyuzheng",
-    "dianxian", "pasenbing", "zhongfeng",
-    # 骨骼肌肉疾病
-    "guzhe", "guanzhijieyan", "guzhi-zengsheng", "yaotong", "jinzhouyan",
-    "jianzhouyan", "wangzhuzhouyan", "tongfeng-guanjeyan",
-    # 泌尿系统疾病
-    "shenyan", "shenjieshi", "niaolu-ganran", "qianliexianyan", "niaobing",
-    # 皮肤疾病
-    "pifuyan", "shizhen", "xuanyuan", "cuochuang", "tuofa",
-    # 眼科疾病
-    "jinshi", "yuanzhi", "sanquan", "qingguangzhan", "baineizhang",
-    # 耳鼻喉疾病
-    "zhongeryan", "biyiyan", "houyan", "biyan-guominxing",
-    # 妇科疾病
-    "yuedao-bing", "gongjingyan", "luanhuang-nangzhong", "zijiang-miyao",
-    # 儿科疾病
-    "xiaor-ganmao", "xiaor-fashao", "shouzu-koubing", "xiaor-fuxie",
+    "dianxian", "pasenbing", "zhongfeng", "miantan", "shenjingruotong", "zhongjizhengwuli",
+    # 骨骼肌肉
+    "guzhe", "guanzhijieyan", "guzhizengsheng", "yaotong", "jianzhouyan",
+    "jingzhuibing", "qiangzixingjizhuyan", "wangzhuzhouyan",
+    # 泌尿
+    "shenyan", "shenjieshi", "niaoluganran", "qianliexianyan",
+    "qianliexianzengsheng", "niaolujieshi",
+    # 皮肤
+    "pifuyan", "shizhen", "xunmazhen", "niupixuan", "cuochuang",
+    "tuofa", "hongbanlangchuang", "pifuguomin",
+    # 眼科
+    "jinshi", "yuanzhi", "qingguangyan", "baineizhang", "jiemoyan", "maizhuyan",
+    # 耳鼻喉
+    "zhongeryan", "houyan", "erming", "erlong", "waieryan",
+    # 妇科
+    "yuedaoyan", "gongjingyan", "luanchaonangzhong", "zigongjiliu",
+    "yuediaobujun", "gongwaiyun",
+    # 儿科
+    "xiaoerganmao", "xiaoerfashao", "shouzukoubing", "xiaoerfuxie", "xiaoerfeiyan",
     # 肿瘤
-    "feiai", "ganai", "weichang-ai", "ruquan", "linbaliu",
+    "ruxianai", "linbaliu", "weiai", "changai",
     # 传染病
-    "yigan", "binggan", "aizibing", "jiehe",
-    # 其他常见病
-    "pinyin", "pinxue", "guomin", "shuiyin", "tangshang",
+    "yigan", "binggan", "aizibing", "jiehe", "shuibing",
+    # 其他常见
+    "pinxue", "guomin", "tangshang", "meiniuer", "zhongshu",
+    "kouqiangkuiyang", "yachi", "manxingpilaoyu",
 ]
 
-# Generate full URLs from disease IDs
+
+# Generate full URLs from disease IDs (deduplicated, order preserved)
 def get_predefined_urls() -> list:
-    """Generate full haodf.com URLs from predefined disease IDs"""
-    return [
-        f"https://www.haodf.com/citiao/jibing-{disease_id}.html"
-        for disease_id in COMMON_DISEASES
-    ]
+    """Generate full haodf.com URLs from predefined disease slugs"""
+    seen, urls = set(), []
+    for disease_id in COMMON_DISEASES:
+        if disease_id in seen:
+            continue
+        seen.add(disease_id)
+        urls.append(f"https://www.haodf.com/citiao/jibing-{disease_id}.html")
+    return urls
 
 # ===== Logging Setup =====
 
@@ -347,34 +360,45 @@ class MedicalCrawler:
             import re
 
             # Try to find department info (e.g., "心血管内科")
+            # 科室信息：优先显式"就诊科室："标签。
+            # 注意：通用 r'([^\s]+科)' 会误匹配"就诊科"三个字（首见于"就诊科室"），已移除。
             dept_patterns = [
-                r'([^\s]+科)',  # Match patterns like "心血管内科"
-                r'就诊科室[：:]\s*([^\n]+)',
-                r'科室[：:]\s*([^\n]+)',
+                r'就诊科室[：:]\s*([^\n，。;；]{2,15})',
+                r'科室[：:]\s*([^\n，。;；]{2,15})',
             ]
             for pattern in dept_patterns:
                 match = re.search(pattern, page_text)
                 if match:
-                    disease["department"] = match.group(1).strip()
-                    break
+                    dept = match.group(1).strip()
+                    if dept and "就诊科室" not in dept:
+                        disease["department"] = dept
+                        break
 
-            # Extract description from main content area
-            # Look for sections with medical information
-            content_sections = soup.find_all(["div", "section", "p"], class_=True)
-            description_parts = []
-            for section in content_sections[:5]:
-                text = section.get_text(strip=True)
-                if len(text) > 50 and len(text) < 500:  # Reasonable length for description
-                    description_parts.append(text)
-
-            if description_parts:
-                disease["description"] = " ".join(description_parts)[:500]
+            # 描述：优先取最长正文 <p> 段（排除导航/推广文案），
+            # 退路：带 class 的内容容器
+            boilerplate = ("好大夫", "copyright", "预约挂号", "电话咨询", "版权所有", "在线问诊")
+            best = ""
+            for tag in soup.find_all("p"):
+                txt = tag.get_text(strip=True)
+                if 80 <= len(txt) <= 600 and len(txt) > len(best) \
+                        and not any(k in txt for k in boilerplate):
+                    best = txt
+            if not best:
+                for section in soup.find_all(["div", "section"], class_=True):
+                    txt = section.get_text(strip=True)
+                    if 50 < len(txt) < 500 and not any(k in txt for k in boilerplate):
+                        best = txt
+                        break
+            if best:
+                disease["description"] = best[:500]
 
             # Extract symptoms
             symptoms = []
             symptom_patterns = [
-                r'症状[：:]\s*([^\n]+)',
                 r'常见症状[：:]\s*([^\n]+)',
+                r'主要症状[：:]\s*([^\n]+)',
+                r'临床表现[：:]\s*([^\n]+)',
+                r'症状[：:]\s*([^\n]+)',
             ]
             for pattern in symptom_patterns:
                 match = re.search(pattern, page_text)
@@ -406,7 +430,11 @@ class MedicalCrawler:
     # ===== XYWY.com Crawlers (Backup) =====
 
     def crawl_xywy_list(self) -> list:
-        """Crawl disease list from xywy.com as backup source"""
+        """Crawl disease list from xywy.com as backup source.
+
+        站点已迁移：疾病条目现位于 zzk.xywy.com/{id}_gaishu.html，
+        jib.xywy.com 首页仍索引 100+ 条，从中发现。
+        """
         logger.info("=" * 60)
         logger.info("[START] Crawling xywy.com disease list (backup source)")
         logger.info("=" * 60)
@@ -419,15 +447,14 @@ class MedicalCrawler:
             if not html:
                 return disease_urls
 
-            soup = BeautifulSoup(html, "html.parser")
-
-            for link in soup.find_all("a", href=True):
-                href = link["href"]
-                if "jib.xywy.com" in href and href.endswith(".htm"):
-                    if href not in self.crawled_urls:
-                        disease_urls.append(href)
-
-            logger.info(f"[LIST] Found {len(disease_urls)} disease URLs from xywy.com")
+            import re
+            ids = set(re.findall(r"(?:https?:)?//zzk\.xywy\.com/(\d+_gaishu\.html)", html))
+            disease_urls = [
+                f"https://zzk.xywy.com/{page_id}"
+                for page_id in sorted(ids)
+                if f"https://zzk.xywy.com/{page_id}" not in self.crawled_urls
+            ]
+            logger.info(f"[LIST] Found {len(disease_urls)} disease URLs from xywy.com (zzk)")
 
         except Exception as e:
             logger.error(f"[ERROR] Failed to crawl xywy.com list: {e}")
@@ -435,38 +462,82 @@ class MedicalCrawler:
         return disease_urls
 
     def crawl_xywy_detail(self, url: str) -> Optional[dict]:
-        """Crawl disease detail from xywy.com"""
+        """Crawl disease/symptom detail from zzk.xywy.com（{id}_gaishu.html）
+
+        页面无 h1，疾病名取自 <title> 首段（如「头痛怎么办_原因_检查_..._寻医问药网」）；
+        正文含 就诊科室 / 相关症状 / 相关检查 / 治疗 等可正则定位的结构化片段。
+        """
         try:
             html = self._fetch(url)
             if not html:
                 return None
 
+            import re
             soup = BeautifulSoup(html, "html.parser")
             disease = {"source": "xywy.com", "url": url, "crawled_at": datetime.now().isoformat()}
 
-            # Extract disease name
-            name_tag = soup.find("h1")
-            if name_tag:
-                disease["name"] = name_tag.get_text(strip=True)
+            # 名称：<title> 首段去掉「怎么办/是怎么回事/...」尾巴
+            title_tag = soup.find("title")
+            if title_tag:
+                seg = title_tag.get_text(strip=True).split("_")[0]
+                disease["name"] = re.sub(r"(怎么办|是怎么回事|是什么原因|是什么病)$", "", seg).strip()
+            if not disease.get("name"):
+                h1 = soup.find("h1")
+                if h1:
+                    disease["name"] = h1.get_text(strip=True)
+            if not disease.get("name"):
+                return None
 
-            # Extract description
-            desc_div = soup.find("div", class_="jib-jj") or soup.find("div", class_="content")
-            if desc_div:
-                disease["description"] = desc_div.get_text(strip=True)[:500]
+            page_text = soup.get_text()
 
-            # Extract symptoms, department, etc.
-            for label in ["症状", "科室", "治疗", "药物"]:
-                tag = soup.find(string=lambda s: s and label in s if s else False)
-                if tag:
-                    parent = tag.find_parent()
-                    if parent:
-                        text = parent.get_text(strip=True)
-                        if label == "症状":
-                            disease["symptoms"] = [s.strip() for s in text.split("、") if s.strip()]
-                        elif label == "科室":
-                            disease["department"] = text
-                        elif label == "治疗":
-                            disease["treatment"] = text[:300]
+            # 就诊科室（取首个出现，截断到下一个栏目标签）
+            m = re.search(
+                r"就诊科室[：:]\s*([^\n]{1,40}?)(?:相关检查|相关症状|温馨提示|\s{2,}|$)",
+                page_text,
+            )
+            if m:
+                disease["department"] = m.group(1).strip().rstrip("，。、 ")
+
+            # 症状列表（相关症状优先，其次常见症状）
+            m = (
+                re.search(r"相关症状\s+(.{1,120}?)\s*温馨提示", page_text)
+                or re.search(r"常见症状[：:]?\s*([^\n]{1,120})", page_text)
+            )
+            if m:
+                symptoms = [
+                    s.strip()
+                    for s in re.split(r"[、，,\s]+", m.group(1))
+                    if 1 < len(s.strip()) <= 12
+                ]
+                disease["symptoms"] = symptoms[:10]
+
+            # 相关检查（并入治疗字段，供抽取器使用）
+            checks = None
+            m = re.search(
+                r"相关检查[：:]\s*([^\n]{1,120}?)(?:温馨提示|相关症状|\s{2,}|$)",
+                page_text,
+            )
+            if m:
+                checks = m.group(1).strip().rstrip("，。、 ")
+
+            # 治疗文本（关键词后首个像句子的片段）
+            treatment = ""
+            m = re.search(r"治疗[^：:\n]{0,6}[：:]?\s*([^\n]{10,300})", page_text)
+            if m:
+                treatment = m.group(1).strip()
+            if checks:
+                treatment = (
+                    f"{treatment}；相关检查：{checks}" if treatment else f"相关检查：{checks}"
+                )
+            if treatment:
+                disease["treatment"] = treatment[:400]
+
+            # 描述：首个 50–500 字的正文段落
+            for block in soup.get_text("\n").split("\n"):
+                block = block.strip()
+                if 50 < len(block) < 500 and block != disease.get("name"):
+                    disease["description"] = block
+                    break
 
             return disease
 
@@ -476,13 +547,14 @@ class MedicalCrawler:
 
     # ===== Main Crawl Logic =====
 
-    def run(self, max_diseases: int = 100, use_backup: bool = False, use_predefined: bool = True):
+    def run(self, max_diseases: int = 200, use_backup: bool = True, use_predefined: bool = True):
         """
         Run the crawler
 
         Args:
             max_diseases: Maximum number of diseases to crawl
-            use_backup: Whether to use xywy.com as backup source
+            use_backup: Whether to use xywy.com as backup source (default ON,
+                        needed to reach large --max targets)
             use_predefined: Whether to use predefined disease list (recommended)
         """
         logger.info("=" * 60)
@@ -490,13 +562,15 @@ class MedicalCrawler:
         logger.info(f"[CONFIG] Max diseases: {max_diseases}, Backup: {use_backup}, Predefined: {use_predefined}")
         logger.info("=" * 60)
 
-        # Step 1: Get URLs from predefined list (recommended for comprehensive coverage)
+        # Step 1: URLs = 预定义列表 ∪ 列表页发现（去重、保序），两路互补
         if use_predefined:
             predefined_urls = get_predefined_urls()
-            logger.info(f"[LIST] Using predefined disease list: {len(predefined_urls)} diseases")
-            haodf_urls = predefined_urls
+            logger.info(f"[LIST] Predefined disease list: {len(predefined_urls)} slugs")
+            list_urls = self.crawl_haodf_list()
+            haodf_urls = list(dict.fromkeys(predefined_urls + list_urls))
+            logger.info(f"[LIST] Total haodf URLs (predefined + list page): {len(haodf_urls)}")
         else:
-            # Fallback: crawl from haodf.com list page (only ~15 diseases)
+            # Fallback: crawl from haodf.com list page only
             haodf_urls = self.crawl_haodf_list()
 
         for url in haodf_urls:
@@ -574,10 +648,11 @@ def main():
 
     parser = argparse.ArgumentParser(description="Medical Website Crawler")
     parser.add_argument(
-        "--max", type=int, default=100, help="Maximum number of diseases to crawl (default: 100)"
+        "--max", type=int, default=200, help="Maximum number of diseases to crawl (default: 200)"
     )
     parser.add_argument(
-        "--backup", action="store_true", help="Use xywy.com as backup source"
+        "--no-backup", action="store_true",
+        help="Disable xywy.com backup source (backup is ON by default to reach large --max targets)",
     )
     parser.add_argument(
         "--reset", action="store_true", help="Reset checkpoint and start fresh"
@@ -596,7 +671,7 @@ def main():
     crawler = MedicalCrawler()
     crawler.run(
         max_diseases=args.max,
-        use_backup=args.backup,
+        use_backup=not args.no_backup,
         use_predefined=not args.no_predefined
     )
 

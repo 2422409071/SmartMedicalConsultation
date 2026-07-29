@@ -39,6 +39,11 @@ class ConsultationResponse(BaseModel):
     medications: list[dict] = Field(default_factory=list, description="Medication advice")
     disclaimers: list[str] = Field(default_factory=list, description="Medical disclaimers")
     warnings: list[str] = Field(default_factory=list, description="Emergency warnings")
+    linked_entities: list[dict] = Field(
+        default_factory=list,
+        description="实体链接结果：用户口语词 → 图谱规范实体 "
+                    "[{input_entity, matched_entity, type, similarity}]"
+    )
     duration_ms: int = Field(default=0, description="Processing time in milliseconds")
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
 

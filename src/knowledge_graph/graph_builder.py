@@ -136,6 +136,13 @@ NODE_CYPHER_TEMPLATES = {
     """,
 }
 
+# 历史命名 → 规范命名（schema.py RelationType）。
+# 旧版抽取产物用过这两种拼写，导入时统一归一，保证旧 relations.json 仍可用。
+RELATION_TYPE_ALIASES = {
+    "BELONG_TO_DEPARTMENT": "BELONGS_TO_DEPARTMENT",  # legacy-alias
+    "TREATED_BY_DRUG": "TREATED_BY_MEDICATION",       # legacy-alias
+}
+
 RELATION_CYPHER_TEMPLATES = {
     "HAS_SYMPTOM": """
         MATCH (d:Disease {name: $disease_name})
@@ -149,16 +156,16 @@ RELATION_CYPHER_TEMPLATES = {
         MERGE (s)-[r:MAY_INDICATE]->(d)
         ON CREATE SET r.probability = $probability
     """,
-    "BELONG_TO_DEPARTMENT": """
+    "BELONGS_TO_DEPARTMENT": """
         MATCH (d:Disease {name: $disease_name})
         MATCH (dep:Department {name: $department_name})
-        MERGE (d)-[r:BELONG_TO_DEPARTMENT]->(dep)
+        MERGE (d)-[r:BELONGS_TO_DEPARTMENT]->(dep)
         ON CREATE SET r.priority = $priority
     """,
-    "TREATED_BY_DRUG": """
+    "TREATED_BY_MEDICATION": """
         MATCH (d:Disease {name: $disease_name})
         MATCH (dr:Medication {name: $drug_name})
-        MERGE (d)-[r:TREATED_BY_DRUG]->(dr)
+        MERGE (d)-[r:TREATED_BY_MEDICATION]->(dr)
         ON CREATE SET r.evidence_level = $evidence_level
     """,
     "TREATS_DISEASE": """
@@ -386,6 +393,8 @@ class KnowledgeGraphBuilder:
                 for relation in batch:
                     try:
                         rel_type = relation.get("type", "")
+                        # 归一历史命名（如 BELONG_TO_DEPARTMENT → BELONGS_TO_DEPARTMENT）[legacy-alias]
+                        rel_type = RELATION_TYPE_ALIASES.get(rel_type, rel_type)
                         data = relation.get("data", {})
 
                         template = RELATION_CYPHER_TEMPLATES.get(rel_type)

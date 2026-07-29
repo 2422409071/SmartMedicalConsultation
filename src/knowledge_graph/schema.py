@@ -154,6 +154,46 @@ class RelationType(str, Enum):
     HAS_PRECAUTION = "HAS_PRECAUTION"
 
 
+# ============================================================
+# Value-Vocabulary Enums（抽取层与 Agent 层共用的值域契约）
+# ============================================================
+
+class SeverityLevel(str, Enum):
+    """严重程度（超集契约：抽取层与 Agent 层共用此定义）"""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    EMERGENCY = "emergency"
+
+
+class FrequencyLevel(str, Enum):
+    """症状出现频率"""
+    RARE = "rare"
+    OCCASIONAL = "occasional"
+    COMMON = "common"
+    VERY_COMMON = "very_common"
+
+
+class EvidenceLevel(str, Enum):
+    """治疗推荐证据等级"""
+    A = "A"  # Strong evidence
+    B = "B"  # Moderate evidence
+    C = "C"  # Weak evidence
+    D = "D"  # Expert opinion
+
+
+class DiseaseRelationType(str, Enum):
+    """疾病-疾病关系的语义类别（抽取层概念）。
+
+    注意：这不是图关系类型（RelationType），而是描述疾病间关联语义的抽取字段值。
+    原名 RelationType，因与图关系契约重名而改名（R1 名字唯一主人）。
+    """
+    COMPLICATION = "complication"       # 并发症
+    COMORBIDITY = "comorbidity"         # 合并症
+    CAUSAL = "causal"                   # 因果关系
+    SIMILAR = "similar"                 # 相似疾病
+
+
 @dataclass
 class RelationSchema:
     """Schema definition for a relation type"""
@@ -341,6 +381,39 @@ def generate_full_schema_cypher() -> str:
     return "\n".join(lines)
 
 
+def generate_llm_schema_text() -> str:
+    """Generate a compact graph Schema description for LLM prompts (Text2Cypher).
+
+    供 Text2Cypher 引擎注入系统提示词：让 LLM 看着 Schema 生成合法 Cypher。
+    纯静态生成（基于 NODE_SCHEMAS / RELATION_SCHEMAS），不依赖数据库连接。
+    三段式：节点类型（含属性）/ 关系类型（含方向三元组）/ 查询约定（只读+LIMIT）。
+    """
+    lines = ["【节点类型】"]
+    for schema in NODE_SCHEMAS.values():
+        props = ", ".join(schema.properties.keys())
+        lines.append(f"- {schema.label}（{schema.description}）属性: {props}")
+
+    lines.append("")
+    lines.append("【关系类型】格式：(起点)-[:关系]->(终点)")
+    for schema in RELATION_SCHEMAS.values():
+        rel_props = (
+            f"，关系属性: {', '.join(schema.properties.keys())}"
+            if schema.properties else ""
+        )
+        lines.append(
+            f"- ({schema.start_node.value})-[:{schema.type}]->({schema.end_node.value}) "
+            f"{schema.description}{rel_props}"
+        )
+
+    lines.append("")
+    lines.append("【查询约定】")
+    lines.append("- 节点一般用 name 属性匹配；Precaution 节点用 content 属性")
+    lines.append("- 只读查询：仅可用 MATCH / OPTIONAL MATCH / WHERE / WITH / UNWIND / RETURN，"
+                 "禁止 CREATE / MERGE / DELETE / SET / REMOVE 等任何写操作")
+    lines.append("- 查询末尾必须附带 LIMIT（不超过 50）")
+    return "\n".join(lines)
+
+
 # ============================================================
 # Main: Self-test
 # ============================================================
@@ -380,6 +453,13 @@ if __name__ == "__main__":
     print("-" * 40)
     print(generate_full_schema_cypher()[:500])
     print("...")
+
+    # LLM-facing schema text
+    print("\n[LLM SCHEMA TEXT]")
+    print("-" * 40)
+    llm_text = generate_llm_schema_text()
+    print(llm_text[:400])
+    print(f"... ({len(llm_text)} chars total)")
 
     print("\n" + "=" * 60)
     print("[SUCCESS] Schema validation passed!")

@@ -1,5 +1,172 @@
 # 智能医疗问诊助手 - 技术设计文档 (TDD)
 
+## 0. 工程规范（契约与验收）
+
+> **本章定位**：本 TDD 是 AI 生成器（Claude Code）的**系统约束 + 验收清单**。本章每条规范满足两个条件：
+> ① **结构性强制**——违规在写法上就不成立（导入枚举，而非手敲字符串）；
+> ② **机器化验收**——每条规范附可执行检查，由 AI 在生成后自行运行（`python scripts/check_contracts.py`）。
+>
+> **学生用法**：不需要背诵规范。每条 Vibe Coding 指令开头固定写一句——
+> 「严格遵守 TDD.md 第 0 章工程规范 R1–R8，生成后运行自检，全绿才算完成」。
+
+### 0.1 为什么需要工程规范（Vibe Coding 的漂移问题）
+
+AI 逐模块生成代码，每个模块内部永远自洽；但同一个名字如果活在多处（Schema 定义 / 抽取提示词 / 建图模板 / 查询语句 / 存量数据），多轮迭代后必然漂移。
+
+**真实事故（本项目）**：关系类型名规范化迁移只改了代码层，存量 Neo4j 数据未迁移（库里仍是 `BELONG_TO_DEPARTMENT`，代码查询 `BELONGS_TO_DEPARTMENT`）→ 科室推荐的图谱查询全部静默返空（日志 `kg=[]` + Neo4j 警告 `relationship type is not in the database`）→ 所有回答退化为纯 LLM 兜底，效果与通用大模型无异。
+
+**规范的定位**：一致性类 bug（名字 / 字段 / 维度 / 数据与代码漂移）恰恰是零基础学生完全无法调试的类别——规范的目标是让这类 bug **在诞生当天死亡**。
+
+### R1 名字唯一主人（Single Source of Truth）
+
+**约束**：
+
+1. 节点类型、关系类型**只允许**定义在 `src/knowledge_graph/schema.py` 的 `NodeType` / `RelationType` 枚举中；意图类型只在 `src/agents/state.py` 的 `IntentType`。
+2. 其他所有文件（抽取 prompt、建图模板、查询方法、Cypher 拼装）一律 **import 枚举**后用 `.value` 拼装，**禁止直接书写类型名字符串**。
+3. 可调参数（阈值 / 超时 / top_k / 端口）一律进 `config/settings.py`，禁止散落魔法数字。
+
+**验收**：
+
+```bash
+python scripts/check_contracts.py --r1
+# 1) 历史错误名扫描：BELONG_TO_DEPARTMENT / TREATED_BY_DRUG / TREATED_BY（非 _MEDICATION 后缀）等出现即报错
+# 2) 枚举定义位置检查：除 schema.py / state.py 外不允许出现 Enum 类型定义
+# 3) 未知名字扫描：代码中出现枚举之外的 SCREAMING_SNAKE 类型名 → 告警
+```
+
+### R2 契约先行与生成顺序
+
+**约束**：模块必须按契约依赖顺序生成，下游生成时**先 import 已存在的契约文件**，不允许引入契约之外的新类型名 / 字段名；确需扩展时，**先改契约文件，再重新生成下游**。
+
+```
+schema.py（名字契约）→ extraction/（抽取，产出契约内类型）→ graph_builder（按契约写库）
+→ graph_queries（按契约读库）→ vector_store（索引字段契约）→ agents/ → api/（接口契约）→ frontend/
+```
+
+**验收**：R1 + R5 检查全绿（见下）。
+
+### R3 前后端字段契约
+
+**约束**：接口字段**只在 `src/api/models.py` 实现**；前端按契约表逐字段消费；字段增删改必须**先更新本表**再动代码。
+
+**契约表（本项目现行）**：
+
+| 接口 / 通道 | 字段 | 类型 | 生产方 | 前端消费位置 |
+|---|---|---|---|---|
+| POST /api/consult 请求 | query | str | 前端输入 | — |
+| | session_id | str | 前端生成 | — |
+| /api/consult 响应（也是 SSE answer 帧） | answer | str | answer_fusion | ChatMessage 正文 |
+| | intent | str | intent_classifier | 元信息意图标签 |
+| | symptoms | list[str] | symptom_detector | 症状 el-tag |
+| | departments | list[str] | department_recommender | 科室 el-tag |
+| | medications | list[dict] | medication_advisor | 药物 el-tag |
+| | disclaimers | list[str] | safety_checker（强制） | 黄色免责块 |
+| | warnings | list[str] | safety_checker | 红色急症 alert |
+| | linked_entities | list[dict] | medical_knowledge 实体链接 | 「知识定位」标签 |
+| | duration_ms | int | API 层 | 元信息耗时 |
+| SSE progress 帧 | node / label / facts | str / str / dict | routes（NODE_LABELS_ZH） | ChatMessage 进度轨迹 |
+| SSE error 帧 | message | str | routes | 前端错误提示 |
+| GET /api/health | status / neo4j_connected / vector_index_loaded / agent_system_ready | str / bool×3 | AppState | 侧栏状态灯 |
+| GET /api/stats | knowledge_graph / vector_index / api | dict×3 | 各数据源 | （预留） |
+
+**验收**：
+
+```bash
+python scripts/check_contracts.py --r3
+# 前端 data.<字段> 引用了 models.py 不存在的字段 → 错误
+# models.py 提供但前端从未消费的字段 → 告警（如新增字段忘了接）
+```
+
+### R4 索引与嵌入契约
+
+**约束（数值契约，改动须同步本表）**：
+
+| 契约项 | 值 | 权威位置 |
+|---|---|---|
+| 嵌入模型 | BGE-M3 | `models/bge-m3`，`settings.embedding_model_path` |
+| 向量维度 | **1024** | `models/bge-m3/config.json` 的 `hidden_size`；`scripts/build_index.py` 的 `dimension` |
+| 索引类型 | IndexIVFFlat + METRIC_INNER_PRODUCT | `scripts/build_index.py`（向量必须 `normalize_embeddings=True`） |
+| entities.json 条目结构 | `{name, type, data}` | `data/indexes/entities.json`，下标与索引向量一一对应 |
+| 相似度换算 | IP→原值；L2→`1 - d/2` | `VectorRetriever._distance_to_similarity` |
+
+**验收**：
+
+```bash
+python scripts/check_contracts.py --r4
+# 断言：index.d == 1024 == config.json hidden_size；len(entities.json) == index.ntotal；条目键齐全
+```
+
+### R5 数据即产物（Rebuild over Migration）
+
+**约束**：Neo4j 图内容、FAISS 索引、`data/` 下全部 JSON 均声明为**代码的构建产物**。任何契约变更（R1–R4 涉及的名字 / 字段 / 维度改动）的修复流程**固定为**：
+
+```bash
+# 改完契约文件后：
+python -m src.knowledge_graph.graph_builder clear     # 清空
+python -m src.knowledge_graph.graph_builder build     # 重建（MERGE 幂等）
+python scripts/build_index.py                         # 索引随之重建
+```
+
+**禁止**编写"兼容旧数据"的迁移 / 修补脚本（教学阶段）——学生只需理解"代码对了就重跑"，不需要理解新旧状态共存。
+
+**验收**：
+
+```bash
+python scripts/check_contracts.py --r5
+# DB 节点标签 ⊆ NodeType ∪ {Treatment, MedicalConcept}（后两者为辅助抽取类型）
+# DB 关系类型 ⊆ RelationType；出现枚举之外的类型 = 错误（报错信息附 clear+build 修复指令）
+# 缺失的类型 = 告警（子集属正常，由抽取数据覆盖范围决定）
+```
+
+### R6 命名公约与单向关系
+
+**约束**：
+
+1. 关系名采用 `动词_宾语` 大写蛇形：`HAS_SYMPTOM`、`BELONGS_TO_DEPARTMENT`、`NEEDS_EXAMINATION`。
+2. **一个事实只用一个方向表达**；反向语义用 Cypher 反向遍历表达（如"症状找疾病”用 `MATCH (d)-[:HAS_SYMPTOM]->(s)` 反向匹配），不为同一事实新建反向关系类型——关系数量减半即漂移面减半。
+3. **历史例外**：本项目保留既有反向关系 `MAY_INDICATE` / `TREATS_DISEASE` / `HANDLES_DISEASE`（已有存量数据）；新关系 / 新项目一律遵守单向原则。
+
+### R7 模块自检条款
+
+**约束**：TDD 各模块小节末尾必须附「生成后必跑」检查清单；AI 生成后**立即自行运行**，不绿则停下报告，不交付半成品。
+
+**统一验收器**：`scripts/check_contracts.py`（覆盖 R1 / R3 / R4 / R5），退出码 0 = 全绿。
+
+| 模块 | 生成后必跑 |
+|---|---|
+| `src/extraction/` | `check_contracts.py --r1`；抽取产物类型集合 ⊆ 枚举 |
+| `src/knowledge_graph/` | `check_contracts.py --r1 --r5` |
+| `src/vector_store/`、`scripts/build_index.py` | `check_contracts.py --r4` |
+| `src/api/`、`frontend/` | `check_contracts.py --r3` + `npm run build` |
+| 全模块完成后 | R8 黄金冒烟 |
+
+### R8 黄金冒烟（端到端验收）
+
+每完成一个模块，重跑以下命令，全绿方可继续：
+
+```bash
+python scripts/check_contracts.py              # 契约门禁（R1/R3/R4/R5）
+python scripts/integration_test.py             # 四端点冒烟（health/stats/consult/consult-stream SSE 帧序）
+python evals/runner.py --limit 10              # 评估门禁：disclaimer=1.0、急症召回、intent≥0.9
+```
+
+### 0.2 课堂操作流程（零基础视角）
+
+```
+1. 每条 Vibe Coding 指令开头：「严格遵守 TDD.md 第 0 章工程规范 R1–R8，生成后运行自检」
+2. AI 生成模块 → AI 自己跑 check_contracts.py → 红了自己修（学生旁观即可）
+3. 涉及数据的红色错误 → 修复口径只有 clear + build（R5），不写迁移补丁
+4. 课末学生跑 R8 黄金冒烟 → 绿勾 → 下课
+```
+
+学生全程不需要理解"漂移"——他们只见过两种状态：**绿勾**，或 **AI 正在自己修到绿勾**。
+
+### 0.3 规范的边界（诚实声明）
+
+R1–R8 只能消除**一致性类** bug（名字 / 字段 / 维度 / 数据与代码漂移）；**消除不了**逻辑 / 提示词 / 数据质量类 bug——后者交给 day04 的评估驱动迭代（`evals/`）。区别在于：一致性 bug 学生完全无法调试，必须在设计期消灭；逻辑类 bug 学生"看得见"（答案不好），是可以参与调试的教学素材。
+
+---
+
 ## 1. 技术架构
 
 ### 1.1 整体架构

@@ -82,7 +82,14 @@ pip install -r requirements.txt
 python validate_env.py        # 校验环境配置
 ```
 
-在项目根目录创建 `.env`（已纳入 `.gitignore`）：
+复制模板创建 `.env`（模板入库、`.env` 已在 `.gitignore` 中，永不提交）：
+
+```bash
+copy .env.example .env    # Windows；Linux/macOS 用 cp .env.example .env
+```
+
+然后编辑 `.env` 填入真实值（至少填 `MODEL_API_KEY`，[在此申请](https://dashscope.console.aliyun.com/apiKey)；
+全部字段与可选调优项见 `.env.example` 内注释）：
 
 ```dotenv
 MODEL_API_KEY=sk-xxxxxxxx          # 必填：DashScope API Key
